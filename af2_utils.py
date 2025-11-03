@@ -2993,144 +2993,51 @@ def create_reference_overlay_trajectory(
     
     try:
         import logmd_utils
-        from Bio import PDB
+        from colabdesign.af.alphafold.common import protein
+        
+        # Load PDB files and parse using ColabDesign's parser for full atom mapping
+        with open(state1_path, 'r') as f:
+            pdb_str1 = f.read()
+        with open(state2_path, 'r') as f:
+            pdb_str2 = f.read()
+        
+        # Parse using ColabDesign for accurate atom positions
+        prot1 = protein.from_pdb_string(pdb_str1)
+        prot2 = protein.from_pdb_string(pdb_str2)
+        
+        # Get atom positions (already in correct (N, 37, 3) format)
+        atom_pos1 = prot1.atom_positions.astype(np.float32)
+        atom_pos2 = prot2.atom_positions.astype(np.float32)
         
         # Get sequence if not provided
         if sequence is None:
-            parser = PDB.PDBParser(QUIET=True)
-            structure1 = parser.get_structure("state1", state1_path)
-            seq1 = []
-            for model in structure1:
-                for chain in model:
-                    for residue in chain:
-                        if 'CA' in residue:
-                            resname = residue.get_resname()
-                            aa_map = {
-                                'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
-                                'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
-                                'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
-                                'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y'
-                            }
-                            seq1.append(aa_map.get(resname, 'X'))
-            sequence = ''.join(seq1)
-        
-        # Load full structures and convert to atom_positions format
-        parser = PDB.PDBParser(QUIET=True)
-        structure1 = parser.get_structure("state1", state1_path)
-        structure2 = parser.get_structure("state2", state2_path)
-        
-        # Try to use ColabDesign's PDB parsing for accurate atom mapping
-        try:
-            from colabdesign.af.alphafold.common import protein
-            
-            def pdb_to_atom_positions_colabdesign(pdb_path, seq_length):
-                """Convert PDB to atom_positions using ColabDesign's parser."""
-                with open(pdb_path, 'r') as f:
-                    pdb_str = f.read()
-                
-                # Parse PDB using ColabDesign
-                prot = protein.from_pdb_string(pdb_str)
-                
-                # Extract atom_positions (already in correct format)
-                atom_pos = prot.atom_positions.astype(np.float32)
-                
-                # Ensure correct length
-                if atom_pos.shape[0] != seq_length:
-                    # Trim or pad if needed
-                    if atom_pos.shape[0] > seq_length:
-                        atom_pos = atom_pos[:seq_length]
-                    else:
-                        padded = np.zeros((seq_length, 37, 3), dtype=np.float32)
-                        padded[:atom_pos.shape[0]] = atom_pos
-                        atom_pos = padded
-                
-                return atom_pos
-            
-            # Use ColabDesign's parser for accurate conversion
-            use_colabdesign_parser = True
-        except ImportError:
-            use_colabdesign_parser = False
-        
-        def pdb_to_atom_positions_biopython(structure, seq_length):
-            """Convert BioPython structure to atom_positions format with full atom mapping."""
-            atom_pos = np.zeros((seq_length, 37, 3))
-            
-            # Atom order mapping for AlphaFold (based on common residue types)
-            # This maps atom names to positions in the atom_positions array
-            # Standard backbone: N=0, CA=1, C=2, O=3, CB=4
-            # Sidechain atoms vary by residue type - using common order
-            
-            # Common sidechain atom positions (starting from index 4)
-            # Note: This is a simplified mapping - full implementation would need
-            # residue-specific mappings for all 20 amino acids
-            atom_order_map = {
-                # Backbone
-                'N': 0, 'CA': 1, 'C': 2, 'O': 3,
-                # Common sidechain (varies by residue)
-                'CB': 4,
-                # Additional atoms based on residue type
-                'CG': 5, 'CD': 6, 'CE': 7, 'NZ': 8,  # Lys, Arg
-                'CG1': 5, 'CG2': 6, 'CD1': 7,  # Ile, Leu, Val
-                'CD2': 8,  # Leu, Phe, Trp, Tyr
-                'OG': 5, 'OG1': 5, 'SG': 5,  # Ser, Thr, Cys
-                'OD1': 5, 'OD2': 6, 'OE1': 5, 'OE2': 6,  # Asp, Glu
-                'ND1': 5, 'ND2': 5, 'NE': 5, 'NE1': 5, 'NE2': 6,  # His, Asn, Gln, Trp
-                'CD': 5, 'CE1': 6, 'CE2': 7, 'CZ': 8,  # Phe, Tyr, Trp
-                'CE3': 7, 'CZ2': 8, 'CZ3': 9, 'CH2': 10,  # Trp
-                'OH': 7,  # Tyr
-                'OD2': 6,  # Asp
-                'CG2': 6,  # Val, Thr
+            # Use sequence from parsed protein
+            aatype = prot1.aatype
+            restype_order = {
+                0: 'A', 1: 'C', 2: 'D', 3: 'E', 4: 'F',
+                5: 'G', 6: 'H', 7: 'I', 8: 'K', 9: 'L',
+                10: 'M', 11: 'N', 12: 'P', 13: 'Q', 14: 'R',
+                15: 'S', 16: 'T', 17: 'V', 18: 'W', 19: 'Y'
             }
-            
-            residues = []
-            for model in structure:
-                for chain in model:
-                    for residue in chain:
-                        if 'CA' in residue:
-                            residues.append(residue)
-            
-            for i, residue in enumerate(residues):
-                if i >= seq_length:
-                    break
-                
-                resname = residue.get_resname()
-                
-                # Map all atoms in this residue
-                for atom in residue:
-                    atom_name = atom.get_name().strip()
-                    
-                    # Get standard backbone
-                    if atom_name in ['N', 'CA', 'C', 'O']:
-                        idx = atom_order_map[atom_name]
-                        atom_pos[i, idx, :] = atom.coord
-                    elif atom_name == 'CB':
-                        atom_pos[i, 4, :] = atom.coord
-                    else:
-                        # Try to map sidechain atoms
-                        # For simplicity, map common atoms to common positions
-                        # This isn't perfect but should capture most atoms
-                        if atom_name in atom_order_map:
-                            idx = atom_order_map[atom_name]
-                            # Only use if position hasn't been filled (take first match)
-                            if np.allclose(atom_pos[i, idx, :], [0, 0, 0]):
-                                atom_pos[i, idx, :] = atom.coord
-                        else:
-                            # For unmapped atoms, find first available position
-                            # This handles unusual atoms or naming variations
-                            for idx in range(5, 37):
-                                if np.allclose(atom_pos[i, idx, :], [0, 0, 0]):
-                                    atom_pos[i, idx, :] = atom.coord
-                                    break
-            
-            return atom_pos
+            sequence = ''.join([restype_order.get(aa, 'X') for aa in aatype])
         
-        # Choose parser and convert structures
-        if use_colabdesign_parser:
-            atom_pos1 = pdb_to_atom_positions_colabdesign(state1_path, len(sequence))
-            atom_pos2 = pdb_to_atom_positions_colabdesign(state2_path, len(sequence))
-        else:
-            atom_pos1 = pdb_to_atom_positions_biopython(structure1, len(sequence))
-            atom_pos2 = pdb_to_atom_positions_biopython(structure2, len(sequence))
+        # Ensure both structures have same length as sequence
+        seq_length = len(sequence)
+        if atom_pos1.shape[0] != seq_length:
+            if atom_pos1.shape[0] > seq_length:
+                atom_pos1 = atom_pos1[:seq_length]
+            else:
+                padded = np.zeros((seq_length, 37, 3), dtype=np.float32)
+                padded[:atom_pos1.shape[0]] = atom_pos1
+                atom_pos1 = padded
+        
+        if atom_pos2.shape[0] != seq_length:
+            if atom_pos2.shape[0] > seq_length:
+                atom_pos2 = atom_pos2[:seq_length]
+            else:
+                padded = np.zeros((seq_length, 37, 3), dtype=np.float32)
+                padded[:atom_pos2.shape[0]] = atom_pos2
+                atom_pos2 = padded
         
         # Align state2 to state1 if requested
         if align_structures:
