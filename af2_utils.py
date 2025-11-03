@@ -2562,99 +2562,59 @@ def save_pdb(atom_positions: np.ndarray,
         sequence: Amino acid sequence
         output_path: Output PDB file path
         plddt: Optional per-residue pLDDT scores
+    
+    Requires:
+        ColabDesign must be installed
     """
-    try:
-        # Use ColabDesign's proper PDB generation with all atoms
-        from colabdesign.af.alphafold.common import protein
-        
-        # Convert sequence to aatype array
-        restype_order = {
-            'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4,
-            'G': 5, 'H': 6, 'I': 7, 'K': 8, 'L': 9,
-            'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14,
-            'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19
-        }
-        aatype = np.array([restype_order.get(aa, 0) for aa in sequence])
-        
-        # Create residue indices starting at 1 (required for proper PDB format)
-        residue_index = np.arange(1, len(sequence) + 1)
-        
-        # Derive atom_mask from atom_positions
-        # An atom is present if its coordinates are not all zeros OR if it's a backbone atom
-        atom_mask = np.ones((len(sequence), 37))
-        for i in range(len(sequence)):
-            for j in range(37):
-                coords = atom_positions[i, j, :]
-                # Keep backbone atoms (N, CA, C, O) even if zero
-                # For others, mask out if at origin
-                if j >= 4:  # Sidechain atoms (indices 4+)
-                    if np.allclose(coords, [0, 0, 0]):
-                        atom_mask[i, j] = 0.0
-        
-        # Prepare protein dict
-        p = {
-            "aatype": aatype,
-            "residue_index": residue_index,
-            "atom_positions": atom_positions,
-            "atom_mask": atom_mask
-        }
-        
-        # Add B-factors if pLDDT is provided
-        if plddt is not None:
-            # Ensure plddt is in 0-100 range
-            if plddt.max() <= 1.0:
-                plddt = plddt * 100
-            p["b_factors"] = atom_mask * plddt[..., None]
-        else:
-            p["b_factors"] = atom_mask * 50.0  # Default B-factor
-        
-        # Convert to PDB string using ColabDesign's method
-        pdb_str = protein.to_pdb(protein.Protein(**p))
-        
-        # Save to file
-        with open(output_path, 'w') as f:
-            f.write(pdb_str)
-            
-    except ImportError:
-        # Fallback to BioPython if ColabDesign not available
-        warnings.warn("ColabDesign not available, saving CA-only PDB")
-        from Bio.PDB import PDBIO, Structure, Model, Chain, Residue, Atom
-        
-        # Create structure
-        structure = Structure.Structure("prediction")
-        model = Model.Model(0)
-        chain = Chain.Chain("A")
-        
-        # Amino acid mapping
-        aa_map = {
-            'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
-            'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
-            'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
-            'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
-        }
-        
-        for res_idx, aa in enumerate(sequence):
-            resname = aa_map.get(aa, 'UNK')
-            residue = Residue.Residue((' ', res_idx + 1, ' '), resname, '')
-            
-            # Add CA atom (index 1 in atom_positions)
-            ca_coord = atom_positions[res_idx, 1, :]
-            b_factor = plddt[res_idx] * 100 if plddt is not None else 50.0
-            if plddt is not None and plddt.max() <= 1.0:
-                b_factor = plddt[res_idx] * 100
-            ca_atom = Atom.Atom('CA', ca_coord, 1.0, b_factor, 
-                               ' ', 'CA', 0, 'C')
-            residue.add(ca_atom)
-            
-            chain.add(residue)
-        
-        model.add(chain)
-        structure.add(model)
-        
-        # Save
-        io = PDBIO()
-        io.set_structure(structure)
-        io.save(output_path)
+    from colabdesign.af.alphafold.common import protein
+    
+    # Convert sequence to aatype array
+    restype_order = {
+        'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4,
+        'G': 5, 'H': 6, 'I': 7, 'K': 8, 'L': 9,
+        'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14,
+        'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19
+    }
+    aatype = np.array([restype_order.get(aa, 0) for aa in sequence])
+    
+    # Create residue indices starting at 1 (required for proper PDB format)
+    residue_index = np.arange(1, len(sequence) + 1)
+    
+    # Derive atom_mask from atom_positions
+    # An atom is present if its coordinates are not all zeros OR if it's a backbone atom
+    atom_mask = np.ones((len(sequence), 37))
+    for i in range(len(sequence)):
+        for j in range(37):
+            coords = atom_positions[i, j, :]
+            # Keep backbone atoms (N, CA, C, O) even if zero
+            # For others, mask out if at origin
+            if j >= 4:  # Sidechain atoms (indices 4+)
+                if np.allclose(coords, [0, 0, 0]):
+                    atom_mask[i, j] = 0.0
+    
+    # Prepare protein dict
+    p = {
+        "aatype": aatype,
+        "residue_index": residue_index,
+        "atom_positions": atom_positions,
+        "atom_mask": atom_mask
+    }
+    
+    # Add B-factors if pLDDT is provided
+    if plddt is not None:
+        # Ensure plddt is in 0-100 range
+        if plddt.max() <= 1.0:
+            plddt = plddt * 100
+        p["b_factors"] = atom_mask * plddt[..., None]
+    else:
+        p["b_factors"] = atom_mask * 50.0  # Default B-factor
+    
+    # Convert to PDB string using ColabDesign's method
+    pdb_str = protein.to_pdb(protein.Protein(**p))
+    
+    # Save to file
+    with open(output_path, 'w') as f:
+        f.write(pdb_str)
 
 
 def save_pdb_string(atom_positions: np.ndarray,
