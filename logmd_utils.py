@@ -427,6 +427,8 @@ def create_trajectory_from_predictions(
             # Add seed and model info if available
             if 'seed' in pred:
                 metadata['seed'] = pred['seed']
+            if 'model_name' in pred:
+                metadata['model_name'] = pred['model_name']
             if 'msa_mode' in pred:
                 metadata['msa_mode'] = pred['msa_mode']
             if 'ensemble_idx' in pred:
@@ -434,10 +436,12 @@ def create_trajectory_from_predictions(
             
             # Create label
             label = f"Frame {i+1}"
-            if 'msa_mode' in pred:
-                label += f" ({pred['msa_mode']})"
+            if 'model_name' in pred:
+                label += f" {pred['model_name']}"
             if 'seed' in pred:
                 label += f" seed={pred['seed']}"
+            if 'msa_mode' in pred:
+                label += f" ({pred['msa_mode']})"
             
             # Add to trajectory
             integration.add_structure(

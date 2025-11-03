@@ -49,7 +49,7 @@ __all__ = [
     # Template functions
     'get_template_feats', 'process_templates',
     # Prediction functions
-    'setup_model', 'predict_structure', 'predict_with_recycling', 'predict_ensemble',
+    'setup_model', 'predict_structure', 'predict_with_recycling', 'predict_with_all_models', 'predict_ensemble',
     'predict_with_logmd',
     # Analysis functions
     'get_coevolution', 'calculate_rmsd', 'analyze_ensemble', 'get_chain_metrics',
@@ -59,7 +59,7 @@ __all__ = [
     'plot_3d_structure', 'plot_confidence', 'plot_msa', 'plot_coevolution', 'plot_ensemble_analysis',
     'plot_msa_interactive', 'plot_coevolution_interactive', 'compare_coevolution_conditions',
     # LogMD functions
-    'check_logmd', 'create_trajectory_from_ensemble', 'create_recycle_trajectory', 'save_pdb_string',
+    'check_logmd', 'create_trajectory_from_ensemble', 'create_recycle_trajectory', 'create_reference_overlay_trajectory', 'save_pdb_string',
 ]
 
 # Global state for checking if environment is setup
@@ -690,6 +690,7 @@ def predict_structure(model: Any,
                      num_recycles: int = 3,
                      use_dropout: bool = False,
                      seed: int = 0,
+                     models: Optional[List[str]] = None,
                      verbose: bool = True) -> Dict[str, Any]:
     """
     Run structure prediction with AlphaFold2.
@@ -701,6 +702,7 @@ def predict_structure(model: Any,
         num_recycles: Number of recycling iterations
         use_dropout: Enable dropout for stochastic predictions
         seed: Random seed
+        models: List of model names to use (e.g., ['model_1']). If None, uses default.
         verbose: Print prediction progress
         
     Returns:
@@ -719,10 +721,14 @@ def predict_structure(model: Any,
     model.set_opt(num_recycles=num_recycles)
     
     if verbose:
-        print(f"Running prediction (recycles={num_recycles}, dropout={use_dropout}, seed={seed})...")
+        model_str = f", models={models}" if models else ""
+        print(f"Running prediction (recycles={num_recycles}, dropout={use_dropout}, seed={seed}{model_str})...")
     
-    # Run prediction
-    model.predict(dropout=use_dropout, verbose=False)
+    # Run prediction with specified models
+    if models is not None:
+        model.predict(dropout=use_dropout, models=models, verbose=False)
+    else:
+        model.predict(dropout=use_dropout, verbose=False)
     
     # Extract results
     results = {
@@ -754,6 +760,7 @@ def predict_with_recycling(model: Any,
                            job_folder: Optional[str] = None,
                            sequence: Optional[str] = None,
                            model_name: str = "model",
+                           models: Optional[List[str]] = None,
                            verbose: bool = True) -> Dict[str, Any]:
     """
     Run prediction with early stopping based on RMSD convergence.
@@ -769,6 +776,7 @@ def predict_with_recycling(model: Any,
         job_folder: Folder to save PDBs (required if save_pdbs=True)
         sequence: Protein sequence (required if save_pdbs=True)
         model_name: Model name for PDB filenames (default: "model")
+        models: List of model names to use (e.g., ['model_1']). If None, uses default.
         verbose: Print progress
         
     Returns:
@@ -793,8 +801,11 @@ def predict_with_recycling(model: Any,
         model.set_opt(num_recycles=recycle)
         model._inputs.pop("prev", None)  # Reset previous state
         
-        # Run prediction
-        model.predict(dropout=False, verbose=False)
+        # Run prediction with specified models
+        if models is not None:
+            model.predict(dropout=False, models=models, verbose=False)
+        else:
+            model.predict(dropout=False, verbose=False)
         
         # Get current positions
         current_pos = model.aux['atom_positions'][:, 1]  # CA atoms
@@ -851,6 +862,109 @@ def predict_with_recycling(model: Any,
         final_result['job_folder'] = job_folder
     
     return final_result
+
+
+def predict_with_all_models(model: Any,
+                             msa: Optional[np.ndarray] = None,
+                             deletion_matrix: Optional[np.ndarray] = None,
+                             num_seeds: int = 3,
+                             num_recycles: int = 3,
+                             seed_start: int = 0,
+                             save_pdbs: bool = False,
+                             job_folder: Optional[str] = None,
+                             sequence: Optional[str] = None,
+                             models: Optional[List[str]] = None,
+                             verbose: bool = True) -> List[Dict[str, Any]]:
+    """
+    Run predictions across multiple seeds, models, and recycles.
+    
+    This function runs the full AlphaFold2 ensemble: num_seeds × num_models × num_recycles.
+    Each prediction saves a PDB file for every recycle iteration.
+    
+    Args:
+        model: Initialized AF2 model
+        msa: MSA array
+        deletion_matrix: Deletion matrix
+        num_seeds: Number of different random seeds
+        num_recycles: Number of recycling iterations
+        seed_start: Starting seed value
+        save_pdbs: Save PDB files for each recycle (default: False)
+        job_folder: Folder to save PDBs (required if save_pdbs=True)
+        sequence: Protein sequence (required if save_pdbs=True)
+        models: List of model names (e.g., ['model_1', 'model_2', ...]).
+                If None, uses all 5 default AlphaFold2 models.
+        verbose: Print progress
+        
+    Returns:
+        List of prediction results, each with 'seed', 'model_name', and 'trajectory' keys
+        
+    Example:
+        >>> all_results = predict_with_all_models(
+        ...     model, msa, deletion_matrix,
+        ...     num_seeds=3, num_recycles=3,
+        ...     save_pdbs=True, job_folder="my_job", sequence=seq
+        ... )
+        >>> # Creates 3×5×4 = 60 predictions (3 seeds, 5 models, 4 recycles each)
+    """
+    # Get model names
+    if models is None:
+        # Default to all 5 AlphaFold2 models
+        try:
+            models = model._model_names if hasattr(model, '_model_names') else \
+                     ['model_1', 'model_2', 'model_3', 'model_4', 'model_5']
+        except:
+            models = ['model_1', 'model_2', 'model_3', 'model_4', 'model_5']
+    
+    all_predictions = []
+    total = num_seeds * len(models) * (num_recycles + 1)
+    
+    if verbose:
+        print(f"Running predictions: {num_seeds} seeds × {len(models)} models × {num_recycles + 1} recycles = {total} total")
+    
+    # Set MSA once for all predictions
+    if msa is not None:
+        model.set_msa(msa, deletion_matrix)
+    
+    # Loop through seeds
+    for seed_idx in range(num_seeds):
+        seed = seed_start + seed_idx
+        model.set_seed(seed)
+        
+        # Loop through models
+        for model_name in models:
+            if verbose:
+                print(f"  Seed {seed}, {model_name}...", end=" ")
+            
+            # Run prediction with recycling for this model
+            result = predict_with_recycling(
+                model=model,
+                msa=None,  # Already set above
+                deletion_matrix=None,
+                max_recycles=num_recycles,
+                seed=seed,
+                save_pdbs=save_pdbs,
+                job_folder=job_folder,
+                sequence=sequence,
+                model_name=model_name,
+                models=[model_name],  # Use single model
+                verbose=False  # Suppress individual recycle output
+            )
+            
+            # Add model info to result
+            result['seed'] = seed
+            result['model_name'] = model_name
+            
+            all_predictions.append(result)
+            
+            if verbose:
+                print(f"pLDDT={result['metrics']['plddt']*100:.1f}")
+    
+    if verbose:
+        mean_plddt = np.mean([r['metrics']['plddt'] for r in all_predictions])
+        print(f"\n  Total predictions: {len(all_predictions)}")
+        print(f"  Mean pLDDT: {mean_plddt:.3f}")
+    
+    return all_predictions
 
 
 def predict_ensemble(model: Any,
@@ -2837,6 +2951,153 @@ def create_recycle_trajectory(
     except Exception as e:
         if verbose:
             print(f"Failed to create recycle trajectory: {e}")
+        return None
+
+
+def create_reference_overlay_trajectory(
+    state1_path: str,
+    state2_path: str,
+    sequence: Optional[str] = None,
+    project: str = "reference_overlay",
+    align_structures: bool = True,
+    verbose: bool = True
+) -> Optional[Any]:
+    """
+    Create LogMD trajectory with overlay of two reference structures.
+    
+    This function loads state1 and state2 PDB files and creates an interactive
+    LogMD visualization showing both structures overlaid, allowing students to
+    explore structural differences interactively.
+    
+    Args:
+        state1_path: Path to first reference PDB file (e.g., "state1.pdb")
+        state2_path: Path to second reference PDB file (e.g., "state2.pdb")
+        sequence: Amino acid sequence (optional, will be inferred from PDB if not provided)
+        project: LogMD project name (default: "reference_overlay")
+        align_structures: Align state2 to state1 before overlay (default: True)
+        verbose: Print progress information
+        
+    Returns:
+        LogMD trajectory instance or None if unavailable/failed
+        
+    Example:
+        >>> traj = create_reference_overlay_trajectory(
+        ...     "state1.pdb", "state2.pdb", sequence=I89_SEQUENCE
+        ... )
+        >>> # Interactive overlay showing both conformational states
+    """
+    if not check_logmd():
+        if verbose:
+            print("LogMD not available. Install with: pip install logmd")
+        return None
+    
+    try:
+        import logmd_utils
+        from Bio import PDB
+        
+        # Get sequence if not provided
+        if sequence is None:
+            parser = PDB.PDBParser(QUIET=True)
+            structure1 = parser.get_structure("state1", state1_path)
+            seq1 = []
+            for model in structure1:
+                for chain in model:
+                    for residue in chain:
+                        if 'CA' in residue:
+                            resname = residue.get_resname()
+                            aa_map = {
+                                'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
+                                'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
+                                'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
+                                'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y'
+                            }
+                            seq1.append(aa_map.get(resname, 'X'))
+            sequence = ''.join(seq1)
+        
+        # Load full structures and convert to atom_positions format
+        parser = PDB.PDBParser(QUIET=True)
+        structure1 = parser.get_structure("state1", state1_path)
+        structure2 = parser.get_structure("state2", state2_path)
+        
+        # Convert structures to atom_positions (N, 37, 3) format
+        # For reference structures, we'll use BioPython to load full coordinates
+        # and create minimal atom_positions arrays with backbone atoms
+        def pdb_to_atom_positions(structure, seq_length):
+            """Convert BioPython structure to atom_positions format."""
+            atom_pos = np.zeros((seq_length, 37, 3))
+            
+            residues = []
+            for model in structure:
+                for chain in model:
+                    for residue in chain:
+                        if 'CA' in residue:
+                            residues.append(residue)
+            
+            for i, residue in enumerate(residues):
+                if i >= seq_length:
+                    break
+                # Backbone atoms
+                for atom_name, idx in [('N', 0), ('CA', 1), ('C', 2), ('O', 3)]:
+                    if atom_name in residue:
+                        atom_pos[i, idx, :] = residue[atom_name].coord
+                # CB atom if present
+                if 'CB' in residue:
+                    atom_pos[i, 4, :] = residue['CB'].coord
+                # Add more sidechain atoms as needed based on residue type
+            
+            return atom_pos
+        
+        # Create atom_positions from structures
+        atom_pos1 = pdb_to_atom_positions(structure1, len(sequence))
+        atom_pos2 = pdb_to_atom_positions(structure2, len(sequence))
+        
+        # Align state2 to state1 if requested
+        if align_structures:
+            ca1 = atom_pos1[:, 1, :]  # CA atoms from state1
+            atom_pos2 = logmd_utils.superimpose_structures(atom_pos2, ca1)
+        
+        # Create LogMD trajectory
+        integration = logmd_utils.LogMDIntegration()
+        trajectory = integration.create_trajectory(project=project)
+        
+        if trajectory is None:
+            if verbose:
+                print("Failed to create LogMD trajectory")
+            return None
+        
+        # Add state1
+        integration.add_structure(
+            trajectory,
+            atom_pos1,
+            sequence,
+            plddt=None,
+            label="State 1 (Reference)",
+            metadata={'state': 'state1', 'color': 'blue'}
+        )
+        
+        # Add state2
+        integration.add_structure(
+            trajectory,
+            atom_pos2,
+            sequence,
+            plddt=None,
+            label="State 2 (Reference)",
+            metadata={'state': 'state2', 'color': 'red'}
+        )
+        
+        if verbose:
+            print(f"\nReference overlay trajectory created")
+            print(f"View at: {trajectory.url}")
+            if align_structures:
+                print("State 2 aligned to State 1")
+        
+        return trajectory
+        
+    except Exception as e:
+        if verbose:
+            print(f"Failed to create reference overlay: {e}")
+            import traceback
+            traceback.print_exc()
         return None
 
 
