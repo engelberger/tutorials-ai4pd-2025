@@ -41,15 +41,20 @@ __all__ = [
     'get_template_feats', 'process_templates',
     # Prediction functions
     'setup_model', 'predict_structure', 'predict_with_recycling', 'predict_ensemble',
+    'predict_with_logmd',
     # Analysis functions
     'get_coevolution', 'calculate_rmsd', 'analyze_ensemble', 'get_chain_metrics',
     # Visualization functions
     'plot_3d_structure', 'plot_confidence', 'plot_msa', 'plot_coevolution', 'plot_ensemble_analysis',
+    # LogMD functions
+    'check_logmd', 'create_trajectory_from_ensemble', 'save_pdb_string',
 ]
 
 # Global state for checking if environment is setup
 _ENVIRONMENT_SETUP = False
 _COLABDESIGN_AVAILABLE = False
+_LOGMD_AVAILABLE = False
+_LOGMD_INTEGRATION = None
 
 
 # =============================================================================
@@ -188,6 +193,25 @@ def check_installation(verbose: bool = True) -> Dict[str, bool]:
             print(f"  {symbol} {component}: {'installed' if installed else 'not installed'}")
     
     return status
+
+
+def check_logmd() -> bool:
+    """
+    Check if LogMD is available for visualization.
+    
+    Returns:
+        True if LogMD is available, False otherwise
+    """
+    global _LOGMD_AVAILABLE, _LOGMD_INTEGRATION
+    
+    try:
+        import logmd_utils
+        _LOGMD_INTEGRATION = logmd_utils.LogMDIntegration()
+        _LOGMD_AVAILABLE = _LOGMD_INTEGRATION.is_available()
+        return _LOGMD_AVAILABLE
+    except ImportError:
+        _LOGMD_AVAILABLE = False
+        return False
 
 
 
@@ -1334,6 +1358,48 @@ def save_pdb(atom_positions: np.ndarray,
     io.save(output_path)
 
 
+def save_pdb_string(atom_positions: np.ndarray,
+                   sequence: str,
+                   plddt: Optional[np.ndarray] = None) -> str:
+    """
+    Generate PDB format string from structure (for LogMD).
+    
+    Args:
+        atom_positions: Atom coordinates (L, 37, 3)
+        sequence: Amino acid sequence
+        plddt: Optional per-residue pLDDT scores
+        
+    Returns:
+        PDB format string
+    """
+    try:
+        import logmd_utils
+        return logmd_utils.create_pdb_string(atom_positions, sequence, plddt)
+    except ImportError:
+        # Fallback to simple implementation
+        lines = []
+        aa_map = {
+            'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
+            'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
+            'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
+            'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
+        }
+        
+        for res_idx, aa in enumerate(sequence):
+            resname = aa_map.get(aa, 'UNK')
+            ca_coord = atom_positions[res_idx, 1, :]
+            b_factor = plddt[res_idx] if plddt is not None else 1.0
+            line = (
+                f"ATOM  {res_idx+1:5d}  CA  {resname:3s} A{res_idx+1:4d}    "
+                f"{ca_coord[0]:8.3f}{ca_coord[1]:8.3f}{ca_coord[2]:8.3f}"
+                f"  1.00{b_factor:6.2f}           C  "
+            )
+            lines.append(line)
+        
+        lines.append("END")
+        return "\n".join(lines)
+
+
 def load_pdb_coords(pdb_path: str) -> np.ndarray:
     """
     Load CA coordinates from PDB file.
@@ -1357,6 +1423,185 @@ def load_pdb_coords(pdb_path: str) -> np.ndarray:
                     coords.append(residue['CA'].coord)
     
     return np.array(coords)
+
+
+def create_trajectory_from_ensemble(
+    predictions: List[Dict[str, Any]],
+    sequence: str,
+    project: str = "AF2_Tutorial",
+    align_structures: bool = True,
+    sort_by_rmsd: bool = False,
+    reference_coords: Optional[np.ndarray] = None,
+    max_structures: Optional[int] = None,
+    verbose: bool = True
+) -> Optional[Any]:
+    """
+    Create LogMD trajectory from ensemble predictions.
+    
+    Args:
+        predictions: List of prediction dictionaries with 'structure' and 'plddt'
+        sequence: Amino acid sequence
+        project: LogMD project name
+        align_structures: Align all structures to first frame
+        sort_by_rmsd: Sort structures by RMSD to reference
+        reference_coords: Reference CA coordinates for sorting
+        max_structures: Maximum number of structures to include
+        verbose: Print progress information
+        
+    Returns:
+        LogMD trajectory instance or None if unavailable
+    """
+    if not check_logmd():
+        if verbose:
+            print("LogMD not available. Install with: pip install logmd")
+        return None
+    
+    try:
+        import logmd_utils
+        trajectory = logmd_utils.create_trajectory_from_predictions(
+            predictions=predictions,
+            sequence=sequence,
+            project=project,
+            align_structures=align_structures,
+            sort_by_rmsd=sort_by_rmsd,
+            reference_coords=reference_coords,
+            max_structures=max_structures
+        )
+        
+        if verbose and trajectory:
+            print(f"\nLogMD trajectory created with {len(predictions)} frames")
+            print(f"View at: {trajectory.url}")
+        
+        return trajectory
+    except Exception as e:
+        if verbose:
+            print(f"Failed to create trajectory: {e}")
+        return None
+
+
+def predict_with_logmd(
+    sequence: str,
+    msa_mode: str = "mmseqs2",
+    num_recycles: int = 3,
+    project: str = "AF2_Tutorial",
+    show_viewer: bool = True,
+    verbose: bool = True
+) -> Dict[str, Any]:
+    """
+    Run prediction with real-time LogMD visualization.
+    
+    Args:
+        sequence: Amino acid sequence
+        msa_mode: MSA generation mode ("mmseqs2" or "single_sequence")
+        num_recycles: Number of recycling iterations
+        project: LogMD project name
+        show_viewer: Display LogMD viewer in notebook
+        verbose: Print progress information
+        
+    Returns:
+        Dictionary with prediction results and trajectory
+    """
+    if not check_logmd():
+        if verbose:
+            print("LogMD not available. Falling back to standard prediction.")
+        return quick_predict(sequence, msa_mode, num_recycles, verbose=verbose)
+    
+    try:
+        import logmd_utils
+        
+        # Create LogMD trajectory
+        integration = logmd_utils.LogMDIntegration()
+        trajectory = integration.create_trajectory(project=project)
+        
+        if trajectory is None:
+            if verbose:
+                print("Failed to create LogMD trajectory. Falling back to standard prediction.")
+            return quick_predict(sequence, msa_mode, num_recycles, verbose=verbose)
+        
+        if verbose:
+            print(f"Real-time visualization: {trajectory.url}")
+            print("\nRunning prediction with recycling...")
+        
+        # Setup model
+        model = setup_model(sequence, verbose=False)
+        
+        # Generate MSA
+        if msa_mode == "mmseqs2":
+            msa, deletion_matrix = get_msa([sequence], "temp_logmd", verbose=False)
+        else:
+            msa, deletion_matrix = create_single_sequence_msa(sequence)
+        
+        # Get reference CA for alignment
+        reference_ca = None
+        all_structures = []
+        
+        # Run prediction with recycling
+        for recycle in range(num_recycles + 1):
+            model.set_opt(num_recycles=recycle)
+            model._inputs.pop("prev", None)
+            model.predict(dropout=False, verbose=False)
+            
+            # Get structure
+            atom_positions = model.aux['atom_positions'].copy()
+            plddt = model.aux['plddt'].copy()
+            
+            # Align to first frame
+            if reference_ca is None:
+                reference_ca = logmd_utils.get_ca_positions(atom_positions)
+                aligned_positions = atom_positions
+            else:
+                aligned_positions = logmd_utils.superimpose_structures(
+                    atom_positions, reference_ca
+                )
+            
+            # Add to trajectory
+            integration.add_structure(
+                trajectory,
+                aligned_positions,
+                sequence,
+                plddt=plddt,
+                label=f"Recycle {recycle}",
+                metadata={'recycle': recycle, 'mean_plddt': float(plddt.mean())}
+            )
+            
+            all_structures.append({
+                'structure': atom_positions,
+                'plddt': plddt,
+                'recycle': recycle
+            })
+            
+            if verbose:
+                print(f"  Recycle {recycle}: pLDDT={plddt.mean():.3f}")
+        
+        # Get final result
+        final_result = {
+            'structure': model.aux['atom_positions'],
+            'plddt': model.aux['plddt'],
+            'pae': model.aux.get('pae', None),
+            'ptm': model.aux.get('ptm', 0.0),
+            'metrics': {
+                'plddt': model.aux['plddt'].mean(),
+                'ptm': model.aux.get('ptm', 0.0),
+            },
+            'trajectory': trajectory,
+            'all_structures': all_structures
+        }
+        
+        # Display in notebook if requested
+        if show_viewer:
+            try:
+                logmd_utils.display_trajectory_in_notebook(trajectory)
+            except:
+                if verbose:
+                    print(f"\nView trajectory at: {trajectory.url}")
+        
+        return final_result
+        
+    except Exception as e:
+        if verbose:
+            print(f"LogMD prediction failed: {e}")
+            print("Falling back to standard prediction.")
+        return quick_predict(sequence, msa_mode, num_recycles, verbose=verbose)
 
 
 # =============================================================================
