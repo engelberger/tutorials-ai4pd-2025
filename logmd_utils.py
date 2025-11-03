@@ -419,9 +419,15 @@ def create_trajectory_from_predictions(
                 atom_positions = superimpose_structures(atom_positions, reference_ca)
             
             # Create metadata
+            plddt_data = pred.get('plddt')
+            if plddt_data is not None:
+                mean_plddt = float(plddt_data.mean() if hasattr(plddt_data, 'mean') else np.mean(plddt_data))
+            else:
+                mean_plddt = 0.0  # Default for structures without pLDDT
+            
             metadata = {
                 'frame': i + 1,
-                'mean_plddt': float(pred.get('plddt', np.array([0])).mean())
+                'mean_plddt': mean_plddt
             }
             
             # Add seed and model info if available

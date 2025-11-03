@@ -3038,16 +3038,17 @@ def create_reference_overlay_trajectory(
                 atom_pos2 = padded
         
         # Create predictions list for logmd_utils.create_trajectory_from_predictions
+        # Note: For reference structures, we don't have pLDDT scores, so we'll use None
         predictions = [
             {
                 'structure': atom_pos1,
-                'plddt': prot1.b_factors[:, 0] / 100.0 if hasattr(prot1, 'b_factors') else None,
+                'plddt': None,  # Reference structures don't have pLDDT
                 'state': 'State 1',
                 'description': 'Reference conformation 1'
             },
             {
                 'structure': atom_pos2,
-                'plddt': prot2.b_factors[:, 0] / 100.0 if hasattr(prot2, 'b_factors') else None,
+                'plddt': None,  # Reference structures don't have pLDDT
                 'state': 'State 2',
                 'description': 'Reference conformation 2'
             }
