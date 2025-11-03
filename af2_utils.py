@@ -2889,35 +2889,42 @@ def create_recycle_trajectory(
     
     try:
         import logmd_utils
+        from colabdesign.af.alphafold.common import protein
         
         # Load structures and pLDDT values
         structures = []
         plddts = []
         
         for pdb_file in pdb_files:
-            # Load coordinates
-            coords = load_pdb_coords(pdb_file)
+            # Load full structure using ColabDesign's parser
+            with open(pdb_file, 'r') as f:
+                pdb_string = f.read()
             
-            # Convert CA coords to full atom_positions format (N, 37, 3)
-            # For now, we'll create a minimal representation with CA atoms
-            full_structure = np.zeros((len(coords), 37, 3))
-            full_structure[:, 1, :] = coords  # CA is index 1
+            # Parse using ColabDesign to get all atom positions
+            prot = protein.from_pdb_string(pdb_string)
+            full_structure = prot.atom_positions.astype(np.float32)
             structures.append(full_structure)
             
-            # Try to extract pLDDT from B-factor if available
-            try:
-                from Bio import PDB
-                parser = PDB.PDBParser(QUIET=True)
-                structure = parser.get_structure("protein", pdb_file)
-                plddt_values = []
-                for model in structure:
-                    for chain in model:
-                        for residue in chain:
-                            if 'CA' in residue:
-                                plddt_values.append(residue['CA'].bfactor / 100.0)
-                plddts.append(np.array(plddt_values) if plddt_values else None)
-            except:
-                plddts.append(None)
+            # Extract pLDDT from B-factors if available
+            if hasattr(prot, 'b_factors'):
+                # B-factors are per atom, get CA B-factors (index 1)
+                plddt_values = prot.b_factors[:, 1] / 100.0  # Convert to 0-1 range
+                plddts.append(plddt_values)
+            else:
+                # Try to extract pLDDT from B-factor using BioPython as fallback
+                try:
+                    from Bio import PDB
+                    parser = PDB.PDBParser(QUIET=True)
+                    structure = parser.get_structure("protein", pdb_file)
+                    plddt_values = []
+                    for model in structure:
+                        for chain in model:
+                            for residue in chain:
+                                if 'CA' in residue:
+                                    plddt_values.append(residue['CA'].bfactor / 100.0)
+                    plddts.append(np.array(plddt_values) if plddt_values else None)
+                except:
+                    plddts.append(None)
         
         # Create predictions list for LogMD
         predictions = []
