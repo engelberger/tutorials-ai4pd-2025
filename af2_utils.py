@@ -2418,6 +2418,7 @@ def predict_conformational_ensemble(sequence: str,
                                    num_recycles: int = 3,
                                    use_dropout: bool = True,
                                    jobname: str = "ensemble",
+                                   save_all_pdbs: bool = False,
                                    verbose: bool = True) -> List[Dict[str, Any]]:
     """
     Generate conformational ensemble with different MSA conditions.
@@ -2429,12 +2430,20 @@ def predict_conformational_ensemble(sequence: str,
         num_recycles: Recycling iterations
         use_dropout: Enable dropout for diversity
         jobname: Job name
+        save_all_pdbs: Save PDB files for each prediction (default: False)
         verbose: Print progress
         
     Returns:
-        List of all predictions
+        List of all predictions (includes 'job_folder' key if save_all_pdbs=True)
     """
     all_predictions = []
+    
+    # Create job folder if saving PDBs
+    job_folder = None
+    if save_all_pdbs:
+        job_folder = create_job_folder(sequence, jobname)
+        if verbose:
+            print(f"Created job folder: {job_folder}")
     
     for msa_mode in msa_modes:
         if verbose:
@@ -2462,16 +2471,46 @@ def predict_conformational_ensemble(sequence: str,
             verbose=verbose
         )
         
-        # Add MSA mode to each prediction
+        # Add MSA mode and save PDBs if requested
         for pred in predictions:
             pred['msa_mode'] = msa_mode
+            
+            # Save PDB for this prediction
+            if save_all_pdbs and job_folder:
+                seed = pred.get('seed', 0)
+                pdb_path = f"{job_folder}/pdb/{msa_mode}_seed{seed}.pdb"
+                save_pdb(
+                    atom_positions=pred['structure'],
+                    sequence=sequence,
+                    output_path=pdb_path,
+                    plddt=pred.get('plddt')
+                )
         
         all_predictions.extend(predictions)
     
     if verbose:
         print(f"\n{'='*60}")
         print(f"Total predictions generated: {len(all_predictions)}")
+        if save_all_pdbs:
+            print(f"PDFs saved in: {job_folder}/pdb/")
         print(f"{'='*60}")
+    
+    # Add job folder to all predictions if saving
+    if save_all_pdbs and job_folder:
+        for pred in all_predictions:
+            pred['job_folder'] = job_folder
+        
+        # Save best prediction
+        best_pred = max(all_predictions, key=lambda x: x['metrics']['plddt'])
+        best_pdb_path = f"{job_folder}/pdb/best.pdb"
+        save_pdb(
+            atom_positions=best_pred['structure'],
+            sequence=sequence,
+            output_path=best_pdb_path,
+            plddt=best_pred.get('plddt')
+        )
+        if verbose:
+            print(f"Best prediction saved to: {best_pdb_path}")
     
     return all_predictions
 
