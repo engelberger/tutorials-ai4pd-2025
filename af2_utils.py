@@ -109,6 +109,7 @@ def setup_environment(unified_memory: bool = True, verbose: bool = True) -> None
 def install_dependencies(install_colabdesign: bool = True,
                         install_hhsuite: bool = True,
                         download_params: bool = True,
+                        install_logmd: bool = True,
                         verbose: bool = True) -> None:
     """
     Install required dependencies for AlphaFold2 predictions.
@@ -117,6 +118,7 @@ def install_dependencies(install_colabdesign: bool = True,
         install_colabdesign: Install ColabDesign package
         install_hhsuite: Install HH-suite for alignments
         download_params: Download AlphaFold2 parameters
+        install_logmd: Install LogMD for interactive visualization
         verbose: Print installation progress
     """
     if verbose:
@@ -139,6 +141,17 @@ def install_dependencies(install_colabdesign: bool = True,
             if verbose:
                 print("  - Downloading colabfold utilities...")
             os.system("wget -q https://raw.githubusercontent.com/sokrypton/ColabFold/main/colabfold/colabfold.py -O colabfold_utils.py")
+    
+    # Install LogMD
+    if install_logmd and not check_logmd():
+        if verbose:
+            print("  - Installing LogMD for interactive visualization...")
+        os.system("pip -q install logmd")
+        
+        # Check if installation succeeded
+        if check_logmd():
+            if verbose:
+                print("  - LogMD installed successfully")
     
     # Install HHsuite
     if install_hhsuite and not os.path.exists("hhsuite"):
@@ -193,6 +206,7 @@ def check_installation(verbose: bool = True) -> Dict[str, bool]:
     """
     status = {
         'colabdesign': check_colabdesign(),
+        'logmd': check_logmd(),
         'hhsuite': os.path.exists("hhsuite/bin"),
         'alphafold_params': os.path.exists("params/done.txt"),
         'environment_setup': _ENVIRONMENT_SETUP,
