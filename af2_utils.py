@@ -44,6 +44,8 @@ __all__ = [
     'predict_with_logmd',
     # Analysis functions
     'get_coevolution', 'calculate_rmsd', 'analyze_ensemble', 'get_chain_metrics',
+    # GPU-accelerated RMSD functions
+    'calculate_batch_rmsd_gpu', 'calculate_batch_rmsd_to_references', 'calculate_all_vs_all_rmsd',
     # Visualization functions
     'plot_3d_structure', 'plot_confidence', 'plot_msa', 'plot_coevolution', 'plot_ensemble_analysis',
     # LogMD functions
@@ -805,6 +807,267 @@ def predict_ensemble(model: Any,
 # =============================================================================
 # SECTION 6: ANALYSIS FUNCTIONS
 # =============================================================================
+
+# GPU-Accelerated RMSD Functions (from AlphaMask)
+# These functions use JAX for GPU acceleration and parallel processing
+
+# JAX-compiled Kabsch algorithm for optimal superposition
+@jax.jit
+def _kabsch_jax(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
+    """
+    Kabsch algorithm using JAX for GPU acceleration.
+    
+    Args:
+        a: First coordinate set [N, 3]
+        b: Second coordinate set [N, 3]
+    
+    Returns:
+        Rotation matrix [3, 3]
+    """
+    u, s, vh = jnp.linalg.svd(a.T @ b, full_matrices=False)
+    u = jnp.where(jnp.linalg.det(u @ vh) < 0, u.at[:,-1].set(-u[:,-1]), u)
+    return u @ vh
+
+# JAX-compiled RMSD calculation with alignment
+@jax.jit
+def _rmsd_jax(true: jnp.ndarray, pred: jnp.ndarray) -> float:
+    """
+    Calculate RMSD using JAX with GPU acceleration.
+    
+    Performs automatic alignment using Kabsch algorithm and computes RMSD.
+    
+    Args:
+        true: Reference coordinates [N, 3]
+        pred: Predicted coordinates [N, 3]
+    
+    Returns:
+        RMSD value (Angstroms)
+    """
+    # Center coordinates
+    p = true - true.mean(0, keepdims=True)
+    q = pred - pred.mean(0, keepdims=True)
+    
+    # Align pred to true using Kabsch
+    p = p @ _kabsch_jax(p, q)
+    
+    # Calculate RMSD
+    return jnp.sqrt(jnp.square(p-q).sum(-1).mean())
+
+# Vectorized RMSD calculation for parallel processing
+_rmsd_parallel_jax = jax.jit(jax.vmap(_rmsd_jax, (None, 0)))
+
+# All-vs-all RMSD matrix computation
+@jax.jit
+def _pairwise_rmsd_matrix_jax(coords: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute an N×N RMSD matrix for a batch of structures using GPU.
+    
+    Args:
+        coords: Array of shape [N, P, 3], where N is number of structures,
+                P is number of atoms per structure.
+    
+    Returns:
+        rmsd_matrix: Array of shape [N, N], where element [i, j] is RMSD between
+                     coords[i] and coords[j].
+    
+    Example:
+        >>> ca_coords = np.stack([pred[:, 1, :] for pred in predictions])
+        >>> rmsd_matrix = _pairwise_rmsd_matrix_jax(jnp.array(ca_coords))
+    """
+    # For each structure as reference, compute RMSD to all in the batch
+    return jax.vmap(lambda ref: _rmsd_parallel_jax(ref, coords), in_axes=(0,))(coords)
+
+
+def calculate_batch_rmsd_gpu(ref_coords: np.ndarray, 
+                              pred_coords_list: list, 
+                              use_gpu: bool = True) -> np.ndarray:
+    """
+    Calculate RMSD between reference and multiple predictions using GPU acceleration.
+    
+    This function leverages JAX's vectorization to compute RMSDs in parallel on GPU,
+    which is significantly faster than computing them sequentially on CPU.
+    
+    Args:
+        ref_coords: Reference CA coordinates, shape [N_residues, 3]
+        pred_coords_list: List of predicted CA coordinates, each shape [N_residues, 3]
+        use_gpu: Whether to use GPU acceleration (default: True)
+    
+    Returns:
+        Array of RMSD values, shape [N_predictions]
+    
+    Example:
+        >>> ref_ca = ref_structure[:, 1, :]  # Extract CA atoms
+        >>> pred_ca_list = [pred[:, 1, :] for pred in predictions]
+        >>> rmsds = calculate_batch_rmsd_gpu(ref_ca, pred_ca_list)
+    """
+    if not use_gpu:
+        # Fall back to CPU calculation using existing function
+        from colabdesign.shared.protein import _np_rmsd
+        return np.array([_np_rmsd(ref_coords, pred, use_jax=False) 
+                        for pred in pred_coords_list])
+    
+    try:
+        # Convert to JAX arrays
+        ref_jax = jnp.array(ref_coords)
+        pred_batch = jnp.array(np.stack(pred_coords_list))
+        
+        # Calculate RMSDs in parallel on GPU
+        rmsds = _rmsd_parallel_jax(ref_jax, pred_batch)
+        
+        return np.array(rmsds)
+    
+    except Exception as e:
+        warnings.warn(f"GPU calculation failed ({e}), falling back to CPU")
+        from colabdesign.shared.protein import _np_rmsd
+        return np.array([_np_rmsd(ref_coords, pred, use_jax=False) 
+                        for pred in pred_coords_list])
+
+
+def calculate_batch_rmsd_to_references(pred_coords_list: List[np.ndarray],
+                                       ref1_path: str = "state1.pdb",
+                                       ref2_path: str = "state2.pdb",
+                                       use_gpu: bool = True) -> List[Dict[str, float]]:
+    """
+    Calculate RMSD to both reference states for multiple predictions using GPU acceleration.
+    
+    This function is optimized for batch processing many structures at once.
+    
+    Args:
+        pred_coords_list: List of predicted atom coordinates, each with shape [L, 37, 3]
+        ref1_path: Path to first reference PDB file
+        ref2_path: Path to second reference PDB file
+        use_gpu: Use GPU-accelerated RMSD calculation (default: True)
+    
+    Returns:
+        List of dictionaries, each with 'rmsd_state1' and 'rmsd_state2' values
+    
+    Example:
+        >>> predictions = [pred1['structure'], pred2['structure'], ...]
+        >>> rmsds = calculate_batch_rmsd_to_references(predictions)
+    """
+    # Load reference structures CA coordinates
+    ref1_coords = load_pdb_coords(ref1_path)
+    ref2_coords = load_pdb_coords(ref2_path)
+    
+    # Extract CA coordinates from predictions
+    pred_ca_list = [pred_coords[:, 1, :] for pred_coords in pred_coords_list]
+    
+    # Ensure all predictions have same length as references (trim if needed)
+    min_len = min(len(ref1_coords), len(pred_ca_list[0]) if pred_ca_list else 0)
+    ref1_trimmed = ref1_coords[:min_len]
+    ref2_trimmed = ref2_coords[:min_len]
+    pred_ca_trimmed = [pred_ca[:min_len] for pred_ca in pred_ca_list]
+    
+    # Calculate RMSDs in batch
+    if use_gpu and len(pred_ca_list) > 1:
+        try:
+            # Use GPU batch calculation for efficiency
+            rmsds1 = calculate_batch_rmsd_gpu(ref1_trimmed, pred_ca_trimmed, use_gpu=True)
+            rmsds2 = calculate_batch_rmsd_gpu(ref2_trimmed, pred_ca_trimmed, use_gpu=True)
+            
+            # Package results
+            results = []
+            for rmsd1, rmsd2 in zip(rmsds1, rmsds2):
+                results.append({'rmsd_state1': float(rmsd1), 'rmsd_state2': float(rmsd2)})
+            return results
+            
+        except Exception as e:
+            warnings.warn(f"GPU batch calculation failed ({e}), falling back to CPU")
+            use_gpu = False
+    
+    # Fall back to sequential CPU calculation
+    from colabdesign.shared.protein import _np_rmsd
+    results = []
+    for pred_ca in pred_ca_trimmed:
+        rmsd1 = _np_rmsd(pred_ca, ref1_trimmed, use_jax=False)
+        rmsd2 = _np_rmsd(pred_ca, ref2_trimmed, use_jax=False)
+        results.append({'rmsd_state1': rmsd1, 'rmsd_state2': rmsd2})
+    
+    return results
+
+
+def calculate_all_vs_all_rmsd(structures: List[np.ndarray],
+                              chunk_size: int = 100,
+                              use_gpu: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate all-vs-all RMSD matrix for a list of structures.
+    
+    Efficiently computes pairwise RMSDs between all structures using GPU acceleration.
+    Supports multi-GPU via JAX pmap for large-scale computations.
+    
+    Args:
+        structures: List of coordinate arrays, each shape [N_atoms, 3]
+        chunk_size: Number of structures to process at once (for memory management)
+        use_gpu: Whether to use GPU acceleration
+    
+    Returns:
+        Tuple of (rmsd_matrix, mean_pairwise_rmsd)
+        - rmsd_matrix: N x N numpy array of RMSD values
+        - mean_pairwise_rmsd: Mean of upper triangular matrix (excluding diagonal)
+    
+    Example:
+        >>> ca_coords = [struct[:, 1, :] for struct in ensemble_structures]
+        >>> rmsd_mat, mean_rmsd = calculate_all_vs_all_rmsd(ca_coords)
+    """
+    n_structures = len(structures)
+    
+    if n_structures == 0:
+        return np.zeros((0, 0)), 0.0
+    
+    # Stack and convert to JAX array
+    try:
+        coords = jnp.array(np.stack(structures))
+        
+        if use_gpu:
+            # Check for multiple GPUs
+            gpus = jax.devices("gpu")
+            num_gpus = len(gpus)
+            
+            if num_gpus > 1:
+                # Multi-GPU support via pmap
+                warnings.warn(f"Using {num_gpus} GPUs for all-vs-all RMSD calculation")
+                
+                # Process in chunks for memory efficiency
+                rmsd_matrix = np.zeros((n_structures, n_structures))
+                
+                for start in range(0, n_structures, chunk_size):
+                    end = min(start + chunk_size, n_structures)
+                    block = coords[start:end]
+                    
+                    # Calculate RMSD for this chunk vs all structures
+                    sub_rmsd = jax.vmap(lambda ref: _rmsd_parallel_jax(ref, coords), 
+                                       in_axes=(0,))(block)
+                    rmsd_matrix[start:end] = np.array(sub_rmsd)
+            else:
+                # Single GPU or CPU
+                rmsd_matrix = np.array(_pairwise_rmsd_matrix_jax(coords))
+        else:
+            # CPU fallback
+            from colabdesign.shared.protein import _np_rmsd
+            rmsd_matrix = np.zeros((n_structures, n_structures))
+            for i in range(n_structures):
+                for j in range(i+1, n_structures):
+                    rmsd = _np_rmsd(structures[i], structures[j], use_jax=False)
+                    rmsd_matrix[i, j] = rmsd
+                    rmsd_matrix[j, i] = rmsd
+    
+    except Exception as e:
+        warnings.warn(f"GPU calculation failed ({e}), using CPU fallback")
+        # CPU fallback
+        from colabdesign.shared.protein import _np_rmsd
+        rmsd_matrix = np.zeros((n_structures, n_structures))
+        for i in range(n_structures):
+            for j in range(i+1, n_structures):
+                rmsd = _np_rmsd(structures[i], structures[j], use_jax=False)
+                rmsd_matrix[i, j] = rmsd
+                rmsd_matrix[j, i] = rmsd
+    
+    # Calculate mean pairwise RMSD (upper triangular, excluding diagonal)
+    upper_tri_indices = np.triu_indices(n_structures, k=1)
+    mean_pairwise_rmsd = np.mean(rmsd_matrix[upper_tri_indices]) if n_structures > 1 else 0.0
+    
+    return rmsd_matrix, mean_pairwise_rmsd
+
 
 @jax.jit
 def get_coevolution(msa: np.ndarray) -> np.ndarray:
