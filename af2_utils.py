@@ -20,7 +20,11 @@ import gc
 import re
 import tempfile
 import warnings
-from typing import Optional, List, Dict, Any, Tuple, Union
+import logging
+import hashlib
+import json
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Tuple, Union, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -28,15 +32,20 @@ import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
 
+# Configure logging for MSA utilities
+logger = logging.getLogger(__name__)
+
 # Version info
 __version__ = "1.0.0"
 __all__ = [
     # Setup functions
     'setup_environment', 'install_dependencies', 'check_installation',
     # Core utilities
-    'clear_memory', 'get_pdb', 'run_mmseqs2_wrapper',
+    'clear_memory', 'get_pdb', 'run_mmseqs2_wrapper', 'get_hash', 'create_job_folder',
     # MSA functions
     'run_hhalign', 'run_hhfilter', 'get_msa', 'parse_a3m', 'create_single_sequence_msa',
+    # MSA Visualization classes
+    'MSAData', 'MSACoevolutionVisualizer',
     # Template functions
     'get_template_feats', 'process_templates',
     # Prediction functions
@@ -48,8 +57,9 @@ __all__ = [
     'calculate_batch_rmsd_gpu', 'calculate_batch_rmsd_to_references', 'calculate_all_vs_all_rmsd',
     # Visualization functions
     'plot_3d_structure', 'plot_confidence', 'plot_msa', 'plot_coevolution', 'plot_ensemble_analysis',
+    'plot_msa_interactive', 'plot_coevolution_interactive', 'compare_coevolution_conditions',
     # LogMD functions
-    'check_logmd', 'create_trajectory_from_ensemble', 'save_pdb_string',
+    'check_logmd', 'create_trajectory_from_ensemble', 'create_recycle_trajectory', 'save_pdb_string',
 ]
 
 # Global state for checking if environment is setup
@@ -292,6 +302,62 @@ def run_mmseqs2_wrapper(*args, **kwargs):
         return run_mmseqs2(*args, **kwargs)
     except ImportError:
         raise ImportError("colabfold_utils not found. Please run install_dependencies().")
+
+
+def get_hash(sequence: str, length: int = 5) -> str:
+    """
+    Generate hash of sequence for folder naming (uses ColabDesign's predict.get_hash).
+    
+    Args:
+        sequence: Protein sequence
+        length: Length of hash to return
+        
+    Returns:
+        Truncated hash of sequence
+    """
+    try:
+        from colabdesign.af.contrib import predict
+        return predict.get_hash(sequence)[:length]
+    except ImportError:
+        # Fallback if ColabDesign not available
+        return hashlib.md5(sequence.encode()).hexdigest()[:length]
+
+
+def create_job_folder(sequence: str, jobname: str = "prediction") -> str:
+    """
+    Create folder with sequence hash for organizing predictions.
+    
+    This follows the same pattern as predict.py to ensure workshop attendees
+    can easily identify their predictions by sequence.
+    
+    Args:
+        sequence: Protein sequence
+        jobname: Base name for the job
+        
+    Returns:
+        Path to created folder
+        
+    Example:
+        >>> folder = create_job_folder("MKTAY...", "my_protein")
+        >>> # Creates folder like: my_protein_a3f2b/
+        >>> #   with subdirectories: pdb/ and pdb/recycles/
+    """
+    seq_hash = get_hash(sequence)
+    folder_name = f"{jobname}_{seq_hash}"
+    
+    # Handle existing folders by appending a number
+    if os.path.exists(folder_name):
+        n = 0
+        while os.path.exists(f"{folder_name}_{n}"):
+            n += 1
+        folder_name = f"{folder_name}_{n}"
+    
+    # Create folder structure
+    os.makedirs(folder_name, exist_ok=True)
+    os.makedirs(f"{folder_name}/pdb", exist_ok=True)
+    os.makedirs(f"{folder_name}/pdb/recycles", exist_ok=True)
+    
+    return folder_name
 
 
 
@@ -670,6 +736,10 @@ def predict_with_recycling(model: Any,
                            max_recycles: int = 6,
                            early_stop_tolerance: float = 0.5,
                            seed: int = 0,
+                           save_pdbs: bool = False,
+                           job_folder: Optional[str] = None,
+                           sequence: Optional[str] = None,
+                           model_name: str = "model",
                            verbose: bool = True) -> Dict[str, Any]:
     """
     Run prediction with early stopping based on RMSD convergence.
@@ -681,12 +751,20 @@ def predict_with_recycling(model: Any,
         max_recycles: Maximum number of recycles
         early_stop_tolerance: RMSD threshold for early stopping (Angstroms)
         seed: Random seed
+        save_pdbs: Save PDB file for each recycle (default: False)
+        job_folder: Folder to save PDBs (required if save_pdbs=True)
+        sequence: Protein sequence (required if save_pdbs=True)
+        model_name: Model name for PDB filenames (default: "model")
         verbose: Print progress
         
     Returns:
         Dictionary with prediction results and convergence info
     """
     from colabdesign.shared.protein import _np_rmsd
+    
+    # Validate PDB saving parameters
+    if save_pdbs and (job_folder is None or sequence is None):
+        raise ValueError("job_folder and sequence are required when save_pdbs=True")
     
     # Set MSA if provided
     if msa is not None:
@@ -726,10 +804,22 @@ def predict_with_recycling(model: Any,
         }
         results_per_recycle.append(result)
         
+        # Save PDB for this recycle
+        if save_pdbs:
+            pdb_path = f"{job_folder}/pdb/recycles/{model_name}_r{recycle}_seed{seed}.pdb"
+            save_pdb(
+                atom_positions=model.aux['atom_positions'],
+                sequence=sequence,
+                output_path=pdb_path,
+                plddt=model.aux['plddt']
+            )
+        
         if verbose:
             log_str = f"  Recycle {recycle}: pLDDT={result['metrics']['plddt']:.3f}"
             if rmsd_change is not None:
                 log_str += f", RMSD change={rmsd_change:.3f}Å"
+            if save_pdbs:
+                log_str += f" [PDB saved]"
             print(log_str)
         
         # Early stopping check
@@ -743,6 +833,8 @@ def predict_with_recycling(model: Any,
     # Return the last (best) result with full trajectory
     final_result = results_per_recycle[-1]
     final_result['trajectory'] = results_per_recycle
+    if save_pdbs:
+        final_result['job_folder'] = job_folder
     
     return final_result
 
@@ -901,10 +993,15 @@ def calculate_batch_rmsd_gpu(ref_coords: np.ndarray,
         >>> rmsds = calculate_batch_rmsd_gpu(ref_ca, pred_ca_list)
     """
     if not use_gpu:
-        # Fall back to CPU calculation using existing function
-        from colabdesign.shared.protein import _np_rmsd
-        return np.array([_np_rmsd(ref_coords, pred, use_jax=False) 
-                        for pred in pred_coords_list])
+        # Fall back to CPU calculation
+        try:
+            from colabdesign.shared.protein import _np_rmsd
+            return np.array([_np_rmsd(ref_coords, pred, use_jax=False) 
+                            for pred in pred_coords_list])
+        except ImportError:
+            # Use our own CPU implementation if ColabDesign not available
+            return np.array([calculate_rmsd(ref_coords, pred, align=True) 
+                            for pred in pred_coords_list])
     
     try:
         # Convert to JAX arrays
@@ -918,9 +1015,14 @@ def calculate_batch_rmsd_gpu(ref_coords: np.ndarray,
     
     except Exception as e:
         warnings.warn(f"GPU calculation failed ({e}), falling back to CPU")
-        from colabdesign.shared.protein import _np_rmsd
-        return np.array([_np_rmsd(ref_coords, pred, use_jax=False) 
-                        for pred in pred_coords_list])
+        try:
+            from colabdesign.shared.protein import _np_rmsd
+            return np.array([_np_rmsd(ref_coords, pred, use_jax=False) 
+                            for pred in pred_coords_list])
+        except ImportError:
+            # Use our own CPU implementation if ColabDesign not available
+            return np.array([calculate_rmsd(ref_coords, pred, align=True) 
+                            for pred in pred_coords_list])
 
 
 def calculate_batch_rmsd_to_references(pred_coords_list: List[np.ndarray],
@@ -976,12 +1078,20 @@ def calculate_batch_rmsd_to_references(pred_coords_list: List[np.ndarray],
             use_gpu = False
     
     # Fall back to sequential CPU calculation
-    from colabdesign.shared.protein import _np_rmsd
-    results = []
-    for pred_ca in pred_ca_trimmed:
-        rmsd1 = _np_rmsd(pred_ca, ref1_trimmed, use_jax=False)
-        rmsd2 = _np_rmsd(pred_ca, ref2_trimmed, use_jax=False)
-        results.append({'rmsd_state1': rmsd1, 'rmsd_state2': rmsd2})
+    try:
+        from colabdesign.shared.protein import _np_rmsd
+        results = []
+        for pred_ca in pred_ca_trimmed:
+            rmsd1 = _np_rmsd(pred_ca, ref1_trimmed, use_jax=False)
+            rmsd2 = _np_rmsd(pred_ca, ref2_trimmed, use_jax=False)
+            results.append({'rmsd_state1': rmsd1, 'rmsd_state2': rmsd2})
+    except ImportError:
+        # Use our own CPU implementation if ColabDesign not available
+        results = []
+        for pred_ca in pred_ca_trimmed:
+            rmsd1 = calculate_rmsd(pred_ca, ref1_trimmed, align=True)
+            rmsd2 = calculate_rmsd(pred_ca, ref2_trimmed, align=True)
+            results.append({'rmsd_state1': rmsd1, 'rmsd_state2': rmsd2})
     
     return results
 
@@ -1043,6 +1153,27 @@ def calculate_all_vs_all_rmsd(structures: List[np.ndarray],
                 rmsd_matrix = np.array(_pairwise_rmsd_matrix_jax(coords))
         else:
             # CPU fallback
+            try:
+                from colabdesign.shared.protein import _np_rmsd
+                rmsd_matrix = np.zeros((n_structures, n_structures))
+                for i in range(n_structures):
+                    for j in range(i+1, n_structures):
+                        rmsd = _np_rmsd(structures[i], structures[j], use_jax=False)
+                        rmsd_matrix[i, j] = rmsd
+                        rmsd_matrix[j, i] = rmsd
+            except ImportError:
+                # Use our own CPU implementation if ColabDesign not available
+                rmsd_matrix = np.zeros((n_structures, n_structures))
+                for i in range(n_structures):
+                    for j in range(i+1, n_structures):
+                        rmsd = calculate_rmsd(structures[i], structures[j], align=True)
+                        rmsd_matrix[i, j] = rmsd
+                        rmsd_matrix[j, i] = rmsd
+    
+    except Exception as e:
+        warnings.warn(f"GPU calculation failed ({e}), using CPU fallback")
+        # CPU fallback
+        try:
             from colabdesign.shared.protein import _np_rmsd
             rmsd_matrix = np.zeros((n_structures, n_structures))
             for i in range(n_structures):
@@ -1050,23 +1181,484 @@ def calculate_all_vs_all_rmsd(structures: List[np.ndarray],
                     rmsd = _np_rmsd(structures[i], structures[j], use_jax=False)
                     rmsd_matrix[i, j] = rmsd
                     rmsd_matrix[j, i] = rmsd
-    
-    except Exception as e:
-        warnings.warn(f"GPU calculation failed ({e}), using CPU fallback")
-        # CPU fallback
-        from colabdesign.shared.protein import _np_rmsd
-        rmsd_matrix = np.zeros((n_structures, n_structures))
-        for i in range(n_structures):
-            for j in range(i+1, n_structures):
-                rmsd = _np_rmsd(structures[i], structures[j], use_jax=False)
-                rmsd_matrix[i, j] = rmsd
-                rmsd_matrix[j, i] = rmsd
+        except ImportError:
+            # Use our own CPU implementation if ColabDesign not available
+            rmsd_matrix = np.zeros((n_structures, n_structures))
+            for i in range(n_structures):
+                for j in range(i+1, n_structures):
+                    rmsd = calculate_rmsd(structures[i], structures[j], align=True)
+                    rmsd_matrix[i, j] = rmsd
+                    rmsd_matrix[j, i] = rmsd
     
     # Calculate mean pairwise RMSD (upper triangular, excluding diagonal)
     upper_tri_indices = np.triu_indices(n_structures, k=1)
     mean_pairwise_rmsd = np.mean(rmsd_matrix[upper_tri_indices]) if n_structures > 1 else 0.0
     
     return rmsd_matrix, mean_pairwise_rmsd
+
+
+# =============================================================================
+# MSA Visualization Classes and Utilities
+# =============================================================================
+
+@dataclass(frozen=True)
+class MSAData:
+    """
+    Container for MSA data and metadata.
+    
+    Attributes:
+        array: Numeric MSA array (N_sequences, L_positions)
+        deletion_matrix: Deletion matrix (N_sequences, L_positions)
+        sequences: Original list of sequences from parse_a3m
+        neff: Number of effective sequences
+        length: Sequence length (L)
+        masked_positions: List of masked positions (1-based indexing)
+        mutated_positions: List of mutated positions (1-based indexing)
+        condition_name: Name of the experimental condition
+    """
+    array: np.ndarray
+    deletion_matrix: np.ndarray
+    sequences: Sequence[np.ndarray]
+    neff: int
+    length: int
+    masked_positions: List[int] = field(default_factory=list)
+    mutated_positions: List[int] = field(default_factory=list)
+    condition_name: str = ""
+
+
+class MSACoevolutionVisualizer:
+    """
+    Interactive MSA and coevolution visualization utilities.
+    
+    This class provides methods to load, analyze, and visualize MSAs with
+    interactive Plotly-based plots. It supports mutations, masking, and
+    comparative analysis of different MSA conditions.
+    
+    Example:
+        >>> vis = MSACoevolutionVisualizer()
+        >>> msa_data = vis.load_msa("path/to/msa.a3m")
+        >>> coev = vis.compute_coevolution(msa_data)
+        >>> fig = vis.plot_heatmap(coev, msa_data=msa_data)
+        >>> fig.show()
+    """
+    
+    def __init__(self):
+        """Initialize MSA visualizer with residue type mappings."""
+        self.restypes = [
+            "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I",
+            "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"
+        ]
+        self.restypes_with_x_and_gap = self.restypes + ["X", "-"]
+        self._coev_cache: Dict[str, np.ndarray] = {}
+    
+    def load_msa(
+        self,
+        msa_path: Union[str, Path],
+        *,
+        mutations: Optional[List[str]] = None,
+        masking_mode: str = "none",
+        cols: Optional[List[int]] = None,
+        mask_identity: str = "X",
+        condition_name: str = "",
+    ) -> MSAData:
+        """
+        Load and process an MSA file.
+        
+        Args:
+            msa_path: Path to MSA file (a3m format)
+            mutations: List of mutations to apply (e.g., ["I89N", "S74S"])
+            masking_mode: Masking mode - "none", "list", or "ranges"
+            cols: List of column positions to mask (1-based)
+            mask_identity: Character to use for masking (default "X")
+            condition_name: Human-readable condition name
+            
+        Returns:
+            MSAData object containing processed MSA and metadata
+        """
+        msa_path = Path(msa_path)
+        if not msa_path.exists():
+            raise FileNotFoundError(f"MSA file not found: {msa_path}")
+        
+        # Import parse_a3m from colabdesign
+        from colabdesign.af.contrib import predict
+        
+        # Parse MSA
+        sequences, deletion_matrix = predict.parse_a3m(str(msa_path))
+        msa_arr = np.asarray(sequences)
+        
+        logger.info(
+            f"Loaded MSA {msa_path.name} - {msa_arr.shape[0]} sequences, "
+            f"length={msa_arr.shape[1] if msa_arr.size else 0}"
+        )
+        
+        # Apply mutations
+        mutated_positions: List[int] = []
+        if mutations:
+            logger.debug(f"Applying mutations: {mutations}")
+            msa_arr = self._mutate_first_sequence(msa_arr, mutations)
+            mutated_positions = [int(mut[1:-1]) for mut in mutations]
+        
+        # Apply masking
+        masked_positions: List[int] = []
+        if masking_mode == "list" and cols:
+            logger.debug(f"Masking columns: {cols}")
+            msa_arr = self._mask_columns_list(msa_arr, cols, mask_identity)
+            masked_positions = cols
+        
+        return MSAData(
+            array=msa_arr,
+            deletion_matrix=deletion_matrix,
+            sequences=sequences,
+            neff=msa_arr.shape[0],
+            length=msa_arr.shape[1] if msa_arr.size else 0,
+            masked_positions=masked_positions,
+            mutated_positions=mutated_positions,
+            condition_name=condition_name,
+        )
+    
+    def _mutate_first_sequence(
+        self, 
+        arr: np.ndarray, 
+        mutations: List[str]
+    ) -> np.ndarray:
+        """Apply mutations to first sequence in MSA."""
+        arr = arr.copy()
+        
+        for mutation in mutations:
+            if not re.match(r"^[A-Z]\d+[A-Z]$", mutation):
+                raise ValueError(f"Invalid mutation format: {mutation}")
+            
+            original_residue = mutation[0]
+            position = int(mutation[1:-1]) - 1  # Convert to 0-based
+            new_residue = mutation[-1]
+            
+            if position < 0 or position >= arr.shape[1]:
+                raise ValueError(f"Invalid position: {position + 1}")
+            
+            if self.restypes_with_x_and_gap[int(arr[0, position])] != original_residue:
+                raise ValueError(
+                    f"Original residue mismatch at position {position + 1}"
+                )
+            
+            if new_residue not in self.restypes:
+                raise ValueError(f"Invalid new residue: {new_residue}")
+            
+            arr[0, position] = self.restypes.index(new_residue)
+            logger.info(f"Mutated residue {original_residue}{position + 1}{new_residue}")
+        
+        return arr
+    
+    def _mask_columns_list(
+        self, 
+        arr: np.ndarray, 
+        cols: List[int], 
+        mask_identity: str
+    ) -> np.ndarray:
+        """Mask specific columns in MSA (skips first sequence)."""
+        arr = arr.copy()
+        
+        if not cols:
+            raise ValueError("The list of columns cannot be empty")
+        if mask_identity not in self.restypes_with_x_and_gap:
+            raise ValueError(f"Invalid mask_identity: {mask_identity}")
+        
+        mask = self.restypes_with_x_and_gap.index(mask_identity)
+        cols_zero_based = [col - 1 for col in cols]  # Convert to 0-based
+        arr[1:, cols_zero_based] = mask  # Skip first sequence
+        
+        return arr
+    
+    def compute_coevolution(
+        self, 
+        msa: MSAData, 
+        *, 
+        force_recompute: bool = False
+    ) -> np.ndarray:
+        """
+        Compute coevolution matrix with caching.
+        
+        Args:
+            msa: MSAData object
+            force_recompute: Force recomputation even if cached
+            
+        Returns:
+            Coevolution matrix (L x L)
+        """
+        # Create cache key
+        cache_key = hashlib.md5(
+            json.dumps(
+                {
+                    "condition": msa.condition_name,
+                    "masked_pos": msa.masked_positions,
+                    "mutated_pos": msa.mutated_positions,
+                    "sha": hashlib.md5(msa.array.tobytes()).hexdigest(),
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        
+        if not force_recompute and cache_key in self._coev_cache:
+            logger.debug(f"Using cached coevolution for {msa.condition_name}")
+            return self._coev_cache[cache_key]
+        
+        logger.debug(f"Computing coevolution for {msa.condition_name}")
+        coev = get_coevolution(msa.array)
+        self._coev_cache[cache_key] = coev
+        
+        return coev
+    
+    def plot_heatmap(
+        self,
+        coev_matrix: np.ndarray,
+        *,
+        title: str = "Coevolution",
+        msa_data: Optional[MSAData] = None,
+        show_colorbar: bool = True,
+    ):
+        """
+        Create interactive Plotly heatmap of coevolution matrix.
+        
+        Args:
+            coev_matrix: Coevolution matrix to plot
+            title: Plot title
+            msa_data: Optional MSAData for enhanced hover information
+            show_colorbar: Whether to show colorbar
+            
+        Returns:
+            Plotly Figure object
+        """
+        try:
+            import plotly.graph_objects as go
+        except ImportError:
+            raise ImportError("Plotly is required for interactive plots. Install with: pip install plotly")
+        
+        if msa_data is not None:
+            # Enhanced hover with amino acid identities
+            customdata = self._create_customdata_matrix(msa_data)
+            stats = {
+                "mean": np.mean(coev_matrix),
+                "max": np.max(coev_matrix),
+                "std": np.std(coev_matrix)
+            }
+            hovertemplate = self._create_enhanced_hovertemplate(
+                msa_data, title, stats, is_difference=False
+            )
+            
+            fig = go.Figure(
+                data=[
+                    go.Heatmap(
+                        z=coev_matrix,
+                        colorscale="Viridis",
+                        showscale=show_colorbar,
+                        customdata=customdata,
+                        hovertemplate=hovertemplate,
+                        x=list(range(1, coev_matrix.shape[1] + 1)),
+                        y=list(range(1, coev_matrix.shape[0] + 1)),
+                    )
+                ]
+            )
+        else:
+            # Basic hover
+            hovertemplate = (
+                "Position i: %{x}<br>Position j: %{y}<br>"
+                "Coevolution: %{z:.3f}<extra></extra>"
+            )
+            
+            fig = go.Figure(
+                data=[
+                    go.Heatmap(
+                        z=coev_matrix,
+                        colorscale="Viridis",
+                        showscale=show_colorbar,
+                        hovertemplate=hovertemplate,
+                        x=list(range(1, coev_matrix.shape[1] + 1)),
+                        y=list(range(1, coev_matrix.shape[0] + 1)),
+                    )
+                ]
+            )
+        
+        fig.update_layout(
+            title=title,
+            xaxis_title="Residue Position (1-indexed)",
+            yaxis_title="Residue Position (1-indexed)",
+            width=800,
+            height=800,
+        )
+        
+        return fig
+    
+    def plot_difference(
+        self,
+        matrix_a: np.ndarray,
+        matrix_b: np.ndarray,
+        *,
+        title: str = "Difference (A-B)",
+        msa_data: Optional[MSAData] = None,
+    ):
+        """
+        Create difference plot comparing two coevolution matrices.
+        
+        Args:
+            matrix_a: First coevolution matrix
+            matrix_b: Second coevolution matrix
+            title: Plot title
+            msa_data: Optional MSAData for enhanced hover
+            
+        Returns:
+            Plotly Figure object
+        """
+        try:
+            import plotly.graph_objects as go
+        except ImportError:
+            raise ImportError("Plotly is required for interactive plots")
+        
+        diff = matrix_a - matrix_b
+        max_abs = float(np.max(np.abs(diff))) or 1.0
+        
+        if msa_data is not None:
+            customdata = self._create_customdata_matrix(msa_data)
+            hovertemplate = self._create_enhanced_hovertemplate(
+                msa_data, title, is_difference=True
+            )
+            
+            fig = go.Figure(
+                data=[
+                    go.Heatmap(
+                        z=diff,
+                        colorscale="RdBu_r",
+                        zmid=0,
+                        zmin=-max_abs,
+                        zmax=max_abs,
+                        customdata=customdata,
+                        hovertemplate=hovertemplate,
+                        x=list(range(1, diff.shape[1] + 1)),
+                        y=list(range(1, diff.shape[0] + 1)),
+                    )
+                ]
+            )
+        else:
+            fig = go.Figure(
+                data=[
+                    go.Heatmap(
+                        z=diff,
+                        colorscale="RdBu_r",
+                        zmid=0,
+                        zmin=-max_abs,
+                        zmax=max_abs,
+                        hovertemplate="Position i: %{x}<br>Position j: %{y}<br>Δ: %{z:.3f}<extra></extra>",
+                        x=list(range(1, diff.shape[1] + 1)),
+                        y=list(range(1, diff.shape[0] + 1)),
+                    )
+                ]
+            )
+        
+        fig.update_layout(
+            title=title,
+            xaxis_title="Residue Position (1-indexed)",
+            yaxis_title="Residue Position (1-indexed)",
+            width=800,
+            height=800,
+        )
+        
+        return fig
+    
+    def print_diagnostics(self, msa: MSAData) -> None:
+        """Print comprehensive diagnostics for an MSA."""
+        print(f"Diagnostic Analysis for {msa.condition_name}:")
+        print(f"   MSA shape: {msa.array.shape}")
+        print(f"   Sequence length: {msa.length}")
+        print(f"   Number of sequences (Neff): {msa.neff}")
+        
+        # Check first sequence for mutations and masking
+        first_seq = msa.array[0]
+        
+        # Identify masked positions (X = index 20)
+        x_positions_zero_based = np.where(first_seq == 20)[0]
+        x_positions = x_positions_zero_based + 1  # Convert to 1-based
+        
+        if len(x_positions) > 0:
+            print(f"   Masked positions in first sequence (X): {list(x_positions)}")
+            
+            # Check if other sequences are also masked
+            for pos_idx, pos in enumerate(x_positions[:5]):  # Check first 5
+                pos_zero_based = pos - 1
+                masked_count = np.sum(msa.array[:, pos_zero_based] == 20)
+                total_seqs = len(msa.array)
+                masked_percent = (masked_count / total_seqs) * 100
+                print(f"   Position {pos}: {masked_count}/{total_seqs} sequences masked ({masked_percent:.1f}%)")
+        else:
+            print(f"   No masked positions (X) found in first sequence")
+        
+        # Check for mutations if expected
+        if msa.mutated_positions:
+            print(f"   Expected mutations at positions: {msa.mutated_positions}")
+            for pos in msa.mutated_positions:
+                pos_zero_based = pos - 1
+                if pos_zero_based < len(first_seq):
+                    residue = self.restypes_with_x_and_gap[first_seq[pos_zero_based]]
+                    print(f"      Position {pos}: {residue}")
+        
+        # Report masking/mutation status
+        if msa.masked_positions:
+            print(f"   Masking applied at positions: {msa.masked_positions}")
+        if msa.mutated_positions:
+            print(f"   Mutations applied at positions: {msa.mutated_positions}")
+    
+    def _create_customdata_matrix(self, msa_data: MSAData) -> np.ndarray:
+        """Create customdata matrix for hover templates with amino acid pairs."""
+        first_seq = msa_data.array[0]
+        seq_length = len(first_seq)
+        
+        # Create matrix where each cell contains [residue_i, residue_j]
+        customdata = np.empty((seq_length, seq_length), dtype=object)
+        
+        for i in range(seq_length):
+            for j in range(seq_length):
+                res_i = self.restypes_with_x_and_gap[first_seq[i]]
+                res_j = self.restypes_with_x_and_gap[first_seq[j]]
+                customdata[i, j] = [res_i, res_j]
+        
+        return customdata
+    
+    def _create_enhanced_hovertemplate(
+        self,
+        msa_data: MSAData,
+        condition_name: str,
+        stats: Optional[Dict] = None,
+        is_difference: bool = False
+    ) -> str:
+        """Create enhanced hover template with amino acid identities."""
+        if is_difference:
+            template = (
+                f"<b>{condition_name}</b><br>" +
+                "Position i: %{x}<br>" +
+                "Position j: %{y}<br>" +
+                "Residue i: %{customdata[0]}<br>" +
+                "Residue j: %{customdata[1]}<br>" +
+                "Difference: %{z:.3f}<br>" +
+                "<extra></extra>"
+            )
+        else:
+            base_template = (
+                f"<b>{condition_name}</b><br>" +
+                "Position i: %{x}<br>" +
+                "Position j: %{y}<br>" +
+                "Residue i: %{customdata[0]}<br>" +
+                "Residue j: %{customdata[1]}<br>" +
+                "Coevolution: %{z:.3f}<br>" +
+                f"Neff: {msa_data.neff}<br>"
+            )
+            
+            if stats:
+                base_template += (
+                    f"Mean: {stats['mean']:.3f}<br>" +
+                    f"Max: {stats['max']:.3f}<br>" +
+                    f"Std: {stats['std']:.3f}<br>"
+                )
+            
+            template = base_template + "<extra></extra>"
+        
+        return template
 
 
 @jax.jit
@@ -1124,8 +1716,37 @@ def calculate_rmsd(coords1: np.ndarray,
     Returns:
         RMSD value in Angstroms
     """
-    from colabdesign.shared.protein import _np_rmsd
-    return _np_rmsd(coords1, coords2, use_jax=False)
+    try:
+        from colabdesign.shared.protein import _np_rmsd
+        return _np_rmsd(coords1, coords2, use_jax=False)
+    except ImportError:
+        # Standalone CPU implementation when ColabDesign is not available
+        coords1 = np.array(coords1)
+        coords2 = np.array(coords2)
+        
+        if align:
+            # Center coordinates
+            c1 = coords1 - coords1.mean(axis=0)
+            c2 = coords2 - coords2.mean(axis=0)
+            
+            # Kabsch algorithm for optimal rotation
+            H = c1.T @ c2
+            U, S, Vt = np.linalg.svd(H)
+            R = Vt.T @ U.T
+            
+            # Ensure proper rotation (det(R) = 1)
+            if np.linalg.det(R) < 0:
+                Vt[-1, :] *= -1
+                R = Vt.T @ U.T
+            
+            # Apply rotation
+            c1 = c1 @ R
+            
+            # Calculate RMSD
+            return np.sqrt(np.mean(np.sum((c1 - c2)**2, axis=1)))
+        else:
+            # Simple RMSD without alignment
+            return np.sqrt(np.mean(np.sum((coords1 - coords2)**2, axis=1)))
 
 
 def analyze_ensemble(structures: List[np.ndarray],
@@ -1383,6 +2004,295 @@ def plot_coevolution(msa: np.ndarray,
         plt.close()
     
     return fig
+
+
+def plot_msa_interactive(
+    msa_data: MSAData,
+    *,
+    show_coverage: bool = True,
+    show_identity: bool = True,
+    title: str = "MSA Analysis"
+):
+    """
+    Create interactive MSA visualizations with Plotly.
+    
+    Args:
+        msa_data: MSAData object from MSACoevolutionVisualizer
+        show_coverage: Show coverage plot
+        show_identity: Show sequence identity distribution
+        title: Plot title
+        
+    Returns:
+        Plotly Figure object
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        raise ImportError("Plotly is required. Install with: pip install plotly")
+    
+    # Calculate MSA statistics
+    msa_arr = msa_data.array
+    
+    # Coverage: percentage of sequences with non-gap residues at each position
+    # In ColabDesign, gaps are typically represented as index 21 or high values
+    coverage = np.sum(msa_arr < 21, axis=0) / len(msa_arr) * 100
+    
+    # Sequence identity to query (first sequence)
+    query_seq = msa_arr[0]
+    identities = []
+    for seq in msa_arr[1:]:
+        identity = np.mean(seq == query_seq) * 100
+        identities.append(identity)
+    
+    # Create subplots
+    n_plots = sum([show_coverage, show_identity])
+    if n_plots == 0:
+        raise ValueError("At least one plot type must be enabled")
+    
+    fig = make_subplots(
+        rows=n_plots, cols=1,
+        subplot_titles=["MSA Coverage" if show_coverage else None, 
+                       "Sequence Identity Distribution" if show_identity else None],
+        vertical_spacing=0.15
+    )
+    
+    plot_idx = 1
+    
+    if show_coverage:
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(1, len(coverage) + 1)),
+                y=coverage,
+                mode='lines',
+                line=dict(color='steelblue', width=2),
+                name='Coverage',
+                hovertemplate="Position: %{x}<br>Coverage: %{y:.1f}%<extra></extra>"
+            ),
+            row=plot_idx, col=1
+        )
+        fig.update_xaxes(title_text="Residue Position", row=plot_idx, col=1)
+        fig.update_yaxes(title_text="Coverage (%)", range=[0, 105], row=plot_idx, col=1)
+        plot_idx += 1
+    
+    if show_identity:
+        fig.add_trace(
+            go.Histogram(
+                x=identities,
+                nbinsx=20,
+                marker=dict(color='coral', line=dict(color='black', width=1)),
+                name='Identity',
+                hovertemplate="Identity: %{x:.1f}%<br>Count: %{y}<extra></extra>"
+            ),
+            row=plot_idx, col=1
+        )
+        fig.update_xaxes(title_text="Sequence Identity to Query (%)", row=plot_idx, col=1)
+        fig.update_yaxes(title_text="Count", row=plot_idx, col=1)
+    
+    fig.update_layout(
+        title=f"{title}<br><sub>Neff: {msa_data.neff}, Length: {msa_data.length}</sub>",
+        height=400 * n_plots,
+        showlegend=False
+    )
+    
+    return fig
+
+
+def plot_coevolution_interactive(
+    msa: Union[np.ndarray, MSAData],
+    *,
+    title: str = "Coevolution Matrix",
+    condition_name: str = ""
+):
+    """
+    Create interactive coevolution heatmap with Plotly.
+    
+    Args:
+        msa: MSA array or MSAData object
+        title: Plot title
+        condition_name: Condition name for enhanced display
+        
+    Returns:
+        Plotly Figure object
+    """
+    # Create visualizer
+    vis = MSACoevolutionVisualizer()
+    
+    # Handle both MSAData and raw arrays
+    if isinstance(msa, MSAData):
+        msa_data = msa
+        coev = vis.compute_coevolution(msa_data)
+    else:
+        # Create minimal MSAData for raw array
+        msa_data = MSAData(
+            array=msa,
+            deletion_matrix=np.zeros_like(msa),
+            sequences=[msa],
+            neff=msa.shape[0],
+            length=msa.shape[1],
+            condition_name=condition_name or "MSA"
+        )
+        coev = get_coevolution(msa)
+    
+    # Create plot
+    fig = vis.plot_heatmap(coev, title=title, msa_data=msa_data)
+    
+    return fig
+
+
+def compare_coevolution_conditions(
+    conditions: Dict[str, Union[str, Path, MSAData]],
+    *,
+    show_difference: bool = True,
+    reference_condition: Optional[str] = None
+):
+    """
+    Compare coevolution across multiple MSA conditions.
+    
+    Args:
+        conditions: Dict mapping condition names to MSA paths or MSAData objects
+        show_difference: Whether to show difference plots
+        reference_condition: Reference condition for difference plots (default: first)
+        
+    Returns:
+        Tuple of (main_figure, difference_figure) Plotly objects
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        raise ImportError("Plotly is required. Install with: pip install plotly")
+    
+    vis = MSACoevolutionVisualizer()
+    
+    # Load all MSA data
+    msa_store: Dict[str, MSAData] = {}
+    coev_mats: Dict[str, np.ndarray] = {}
+    
+    for cond_name, msa_source in conditions.items():
+        if isinstance(msa_source, MSAData):
+            msa_data = msa_source
+        else:
+            # Load from path
+            msa_data = vis.load_msa(msa_source, condition_name=cond_name)
+        
+        msa_store[cond_name] = msa_data
+        coev_mats[cond_name] = vis.compute_coevolution(msa_data)
+    
+    # Create main comparison plot
+    n = len(coev_mats)
+    cols = min(2, n)
+    rows = (n + cols - 1) // cols
+    
+    fig_main = make_subplots(
+        rows=rows,
+        cols=cols,
+        subplot_titles=list(coev_mats.keys()),
+        vertical_spacing=0.08,
+        horizontal_spacing=0.05,
+    )
+    
+    for idx, (cond_name, coev_mat) in enumerate(coev_mats.items()):
+        r = idx // cols + 1
+        c = idx % cols + 1
+        
+        msa_data = msa_store[cond_name]
+        customdata = vis._create_customdata_matrix(msa_data)
+        stats = {"mean": np.mean(coev_mat), "max": np.max(coev_mat), "std": np.std(coev_mat)}
+        hovertemplate = vis._create_enhanced_hovertemplate(
+            msa_data, cond_name, stats, is_difference=False
+        )
+        
+        hm = go.Heatmap(
+            z=coev_mat,
+            colorscale="Viridis",
+            showscale=(idx == 0),
+            name=f"{cond_name} (Neff: {msa_data.neff})",
+            customdata=customdata,
+            hovertemplate=hovertemplate,
+            x=list(range(1, coev_mat.shape[1] + 1)),
+            y=list(range(1, coev_mat.shape[0] + 1)),
+        )
+        fig_main.add_trace(hm, row=r, col=c)
+    
+    fig_main.update_layout(
+        title="Coevolution Analysis - Multiple Conditions",
+        height=600 * rows,
+        width=1200,
+        showlegend=False,
+    )
+    
+    # Update axis labels
+    for r in range(1, rows + 1):
+        for c in range(1, cols + 1):
+            fig_main.update_xaxes(title_text="Residue Position", row=r, col=c)
+            fig_main.update_yaxes(title_text="Residue Position", row=r, col=c)
+    
+    fig_diff = None
+    if show_difference and len(coev_mats) >= 2:
+        # Create difference plots
+        ref_name = reference_condition or list(coev_mats.keys())[0]
+        ref_mat = coev_mats[ref_name]
+        ref_msa = msa_store[ref_name]
+        
+        other_conditions = {k: v for k, v in coev_mats.items() if k != ref_name}
+        n_diff = len(other_conditions)
+        
+        if n_diff > 0:
+            diff_cols = min(2, n_diff)
+            diff_rows = (n_diff + diff_cols - 1) // diff_cols
+            
+            fig_diff = make_subplots(
+                rows=diff_rows,
+                cols=diff_cols,
+                subplot_titles=[f"{k} - {ref_name}" for k in other_conditions.keys()],
+                vertical_spacing=0.12,
+                horizontal_spacing=0.1,
+            )
+            
+            for idx, (other_name, other_mat) in enumerate(other_conditions.items()):
+                r = idx // diff_cols + 1
+                c = idx % diff_cols + 1
+                
+                diff = other_mat - ref_mat
+                max_abs = float(np.max(np.abs(diff))) or 1.0
+                
+                customdata = vis._create_customdata_matrix(ref_msa)
+                hovertemplate = vis._create_enhanced_hovertemplate(
+                    ref_msa, f"{other_name} - {ref_name}", is_difference=True
+                )
+                
+                fig_diff.add_trace(
+                    go.Heatmap(
+                        z=diff,
+                        colorscale="RdBu_r",
+                        zmid=0,
+                        zmin=-max_abs,
+                        zmax=max_abs,
+                        showscale=(idx == 0),
+                        customdata=customdata,
+                        hovertemplate=hovertemplate,
+                        x=list(range(1, diff.shape[1] + 1)),
+                        y=list(range(1, diff.shape[0] + 1)),
+                    ),
+                    row=r,
+                    col=c,
+                )
+            
+            fig_diff.update_layout(
+                title=f"Coevolution Differences (relative to {ref_name})",
+                height=600 * diff_rows,
+                width=1200,
+                showlegend=False,
+            )
+            
+            # Update axis labels
+            for r in range(1, diff_rows + 1):
+                for c in range(1, diff_cols + 1):
+                    fig_diff.update_xaxes(title_text="Residue Position", row=r, col=c)
+                    fig_diff.update_yaxes(title_text="Residue Position", row=r, col=c)
+    
+    return fig_main, fig_diff
 
 
 def plot_ensemble_analysis(structures: List[np.ndarray],
