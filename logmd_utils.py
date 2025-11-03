@@ -234,7 +234,9 @@ class LogMDIntegration:
             Create a new LogMD trajectory.
             
             Args:
-                project: Project name for organization
+                project: Project name - LEAVE EMPTY for public upload (recommended!)
+                        Empty string = public upload with auto-generated URL (works reliably)
+                        Named projects require authentication and may have storage issues
                 trajectory_id: Optional identifier for the trajectory
                 
             Returns:
@@ -245,7 +247,8 @@ class LogMDIntegration:
                 return None
             
             try:
-                trajectory = self.LogMD(project=project)
+                # Force empty project for public upload (more reliable)
+                trajectory = self.LogMD(project="")
                 
                 if trajectory_id:
                     self.logmd_instances[trajectory_id] = trajectory
@@ -353,7 +356,7 @@ class LogMDIntegration:
 def create_trajectory_from_predictions(
         predictions: List[Dict[str, Any]],
         sequence: str,
-        project: str = "AF2_Tutorial",
+        project: str = "",  # Empty for public upload
         align_structures: bool = True,
         sort_by_rmsd: bool = False,
         reference_coords: Optional[np.ndarray] = None,
@@ -365,7 +368,7 @@ def create_trajectory_from_predictions(
         Args:
             predictions: List of prediction dictionaries with 'structure' and 'plddt'
             sequence: Amino acid sequence
-            project: LogMD project name
+            project: LogMD project name (leave empty for public upload - recommended!)
             align_structures: Align all structures to first frame
             sort_by_rmsd: Sort structures by RMSD to reference
             reference_coords: Reference CA coordinates for sorting
