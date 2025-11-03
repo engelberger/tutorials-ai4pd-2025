@@ -2952,8 +2952,6 @@ def create_recycle_trajectory(
         if verbose:
             print(f"Failed to create recycle trajectory: {e}")
         return None
-
-
 def create_reference_overlay_trajectory(
     state1_path: str,
     state2_path: str,
