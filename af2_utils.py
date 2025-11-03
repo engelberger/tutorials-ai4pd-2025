@@ -2958,7 +2958,7 @@ def create_reference_overlay_trajectory(
     state1_path: str,
     state2_path: str,
     sequence: Optional[str] = None,
-    project: str = "reference_overlay",
+    project: str = "",  # Empty for public upload (recommended!)
     align_structures: bool = True,
     verbose: bool = True
 ) -> Optional[Any]:
@@ -2973,7 +2973,7 @@ def create_reference_overlay_trajectory(
         state1_path: Path to first reference PDB file (e.g., "state1.pdb")
         state2_path: Path to second reference PDB file (e.g., "state2.pdb")
         sequence: Amino acid sequence (optional, will be inferred from PDB if not provided)
-        project: LogMD project name (default: "reference_overlay")
+        project: LogMD project name (empty string for public upload - recommended!)
         align_structures: Align state2 to state1 before overlay (default: True)
         verbose: Print progress information
         
@@ -3039,47 +3039,42 @@ def create_reference_overlay_trajectory(
                 padded[:atom_pos2.shape[0]] = atom_pos2
                 atom_pos2 = padded
         
-        # Align state2 to state1 if requested
+    # Create predictions list for logmd_utils.create_trajectory_from_predictions
+    predictions = [
+        {
+            'structure': atom_pos1,
+            'plddt': prot1.b_factors[:, 0] / 100.0 if hasattr(prot1, 'b_factors') else None,
+            'state': 'State 1',
+            'description': 'Reference conformation 1'
+        },
+        {
+            'structure': atom_pos2,
+            'plddt': prot2.b_factors[:, 0] / 100.0 if hasattr(prot2, 'b_factors') else None,
+            'state': 'State 2',
+            'description': 'Reference conformation 2'
+        }
+    ]
+    
+    # Use the existing create_trajectory_from_predictions function
+    trajectory = logmd_utils.create_trajectory_from_predictions(
+        predictions=predictions,
+        sequence=sequence,
+        project=project,  # Empty string for public upload (recommended!)
+        align_structures=align_structures,
+        sort_by_rmsd=False,  # Keep states in order
+        reference_coords=None,
+        max_structures=None
+    )
+    
+    if trajectory and verbose:
+        print(f"\nReference overlay trajectory created with 2 frames")
+        print(f"View at: {trajectory.url}")
+        print("Frame 1: State 1 (Reference conformation)")
+        print("Frame 2: State 2 (Alternative conformation)")
         if align_structures:
-            ca1 = atom_pos1[:, 1, :]  # CA atoms from state1
-            atom_pos2 = logmd_utils.superimpose_structures(atom_pos2, ca1)
-        
-        # Create LogMD trajectory
-        integration = logmd_utils.LogMDIntegration()
-        trajectory = integration.create_trajectory(project=project)
-        
-        if trajectory is None:
-            if verbose:
-                print("Failed to create LogMD trajectory")
-            return None
-        
-        # Add state1
-        integration.add_structure(
-            trajectory,
-            atom_pos1,
-            sequence,
-            plddt=None,
-            label="State 1 (Reference)",
-            metadata={'state': 'state1', 'color': 'blue'}
-        )
-        
-        # Add state2
-        integration.add_structure(
-            trajectory,
-            atom_pos2,
-            sequence,
-            plddt=None,
-            label="State 2 (Reference)",
-            metadata={'state': 'state2', 'color': 'red'}
-        )
-        
-        if verbose:
-            print(f"\nReference overlay trajectory created")
-            print(f"View at: {trajectory.url}")
-            if align_structures:
-                print("State 2 aligned to State 1")
-        
-        return trajectory
+            print("Note: State 2 has been aligned to State 1 for overlay")
+    
+    return trajectory
         
     except Exception as e:
         if verbose:
