@@ -3039,42 +3039,42 @@ def create_reference_overlay_trajectory(
                 padded[:atom_pos2.shape[0]] = atom_pos2
                 atom_pos2 = padded
         
-    # Create predictions list for logmd_utils.create_trajectory_from_predictions
-    predictions = [
-        {
-            'structure': atom_pos1,
-            'plddt': prot1.b_factors[:, 0] / 100.0 if hasattr(prot1, 'b_factors') else None,
-            'state': 'State 1',
-            'description': 'Reference conformation 1'
-        },
-        {
-            'structure': atom_pos2,
-            'plddt': prot2.b_factors[:, 0] / 100.0 if hasattr(prot2, 'b_factors') else None,
-            'state': 'State 2',
-            'description': 'Reference conformation 2'
-        }
-    ]
-    
-    # Use the existing create_trajectory_from_predictions function
-    trajectory = logmd_utils.create_trajectory_from_predictions(
-        predictions=predictions,
-        sequence=sequence,
-        project=project,  # Empty string for public upload (recommended!)
-        align_structures=align_structures,
-        sort_by_rmsd=False,  # Keep states in order
-        reference_coords=None,
-        max_structures=None
-    )
-    
-    if trajectory and verbose:
-        print(f"\nReference overlay trajectory created with 2 frames")
-        print(f"View at: {trajectory.url}")
-        print("Frame 1: State 1 (Reference conformation)")
-        print("Frame 2: State 2 (Alternative conformation)")
-        if align_structures:
-            print("Note: State 2 has been aligned to State 1 for overlay")
-    
-    return trajectory
+        # Create predictions list for logmd_utils.create_trajectory_from_predictions
+        predictions = [
+            {
+                'structure': atom_pos1,
+                'plddt': prot1.b_factors[:, 0] / 100.0 if hasattr(prot1, 'b_factors') else None,
+                'state': 'State 1',
+                'description': 'Reference conformation 1'
+            },
+            {
+                'structure': atom_pos2,
+                'plddt': prot2.b_factors[:, 0] / 100.0 if hasattr(prot2, 'b_factors') else None,
+                'state': 'State 2',
+                'description': 'Reference conformation 2'
+            }
+        ]
+        
+        # Use the existing create_trajectory_from_predictions function
+        trajectory = logmd_utils.create_trajectory_from_predictions(
+            predictions=predictions,
+            sequence=sequence,
+            project=project,  # Empty string for public upload (recommended!)
+            align_structures=align_structures,
+            sort_by_rmsd=False,  # Keep states in order
+            reference_coords=None,
+            max_structures=None
+        )
+        
+        if trajectory and verbose:
+            print(f"\nReference overlay trajectory created with 2 frames")
+            print(f"View at: {trajectory.url}")
+            print("Frame 1: State 1 (Reference conformation)")
+            print("Frame 2: State 2 (Alternative conformation)")
+            if align_structures:
+                print("Note: State 2 has been aligned to State 1 for overlay")
+        
+        return trajectory
         
     except Exception as e:
         if verbose:
