@@ -1,41 +1,41 @@
-    """
-    LogMD Utilities for AF2 Tutorial
+"""
+LogMD Utilities for AF2 Tutorial
 
-    Provides real-time structure visualization and trajectory creation capabilities
-    for AlphaFold2 predictions using LogMD.
+Provides real-time structure visualization and trajectory creation capabilities
+for AlphaFold2 predictions using LogMD.
 
-    This module is adapted from AlphaMask's LogMD integration to work with the
-    AF2 Utils package for educational tutorials.
+This module is adapted from AlphaMask's LogMD integration to work with the
+AF2 Utils package for educational tutorials.
 
-    Author: Felipe Engelberger
-    Date: 2025
-    License: MIT
-    """
+Author: Felipe Engelberger
+Date: 2025
+License: MIT
+"""
 
-    import logging
-    import numpy as np
-    from typing import Optional, List, Dict, Any, Tuple
-    from pathlib import Path
-    import warnings
+import logging
+import numpy as np
+from typing import Optional, List, Dict, Any, Tuple
+from pathlib import Path
+import warnings
 
-    __version__ = "1.0.0"
-    __all__ = [
-        'LogMDIntegration',
-        'get_ca_positions',
-        'kabsch_rotation',
-        'superimpose_structures',
-        'create_pdb_string',
-        'create_trajectory_from_predictions',
-    ]
+__version__ = "1.0.0"
+__all__ = [
+    'LogMDIntegration',
+    'get_ca_positions',
+    'kabsch_rotation',
+    'superimpose_structures',
+    'create_pdb_string',
+    'create_trajectory_from_predictions',
+]
 
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
-    # =============================================================================
-    # STRUCTURAL SUPERPOSITION UTILITIES
-    # =============================================================================
+# =============================================================================
+# STRUCTURAL SUPERPOSITION UTILITIES
+# =============================================================================
 
-    def get_ca_positions(atom_positions: np.ndarray) -> np.ndarray:
+def get_ca_positions(atom_positions: np.ndarray) -> np.ndarray:
         """
         Extract CA atom coordinates from AlphaFold atom_positions array.
         
@@ -52,7 +52,7 @@
         return atom_positions[:, 1, :].copy()
 
 
-    def kabsch_rotation(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
+def kabsch_rotation(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
         """
         Compute optimal rotation matrix using Kabsch algorithm.
         
@@ -74,10 +74,10 @@
         return U.astype(P.dtype, copy=False)
 
 
-    def superimpose_structures(
+def superimpose_structures(
         atom_positions: np.ndarray,
         reference_ca: np.ndarray
-    ) -> np.ndarray:
+) -> np.ndarray:
         """
         Align atom_positions onto reference_ca using Kabsch algorithm.
         
@@ -110,16 +110,16 @@
         return aligned
 
 
-    # =============================================================================
-    # PDB STRING GENERATION
-    # =============================================================================
+# =============================================================================
+# PDB STRING GENERATION
+# =============================================================================
 
-    def create_pdb_string(
+def create_pdb_string(
         atom_positions: np.ndarray,
         sequence: str,
         plddt: Optional[np.ndarray] = None,
         chain_id: str = 'A'
-    ) -> str:
+) -> str:
         """
         Generate PDB format string from atom positions.
 
@@ -191,11 +191,11 @@
         return '\n'.join(filtered_lines)
 
 
-    # =============================================================================
-    # LOGMD INTEGRATION
-    # =============================================================================
+# =============================================================================
+# LOGMD INTEGRATION
+# =============================================================================
 
-    class LogMDIntegration:
+class LogMDIntegration:
         """
         Integration class for LogMD visualization in AF2 tutorials.
         
@@ -346,11 +346,11 @@
             return url
 
 
-    # =============================================================================
-    # HIGH-LEVEL TRAJECTORY CREATION
-    # =============================================================================
+# =============================================================================
+# HIGH-LEVEL TRAJECTORY CREATION
+# =============================================================================
 
-    def create_trajectory_from_predictions(
+def create_trajectory_from_predictions(
         predictions: List[Dict[str, Any]],
         sequence: str,
         project: str = "AF2_Tutorial",
@@ -358,7 +358,7 @@
         sort_by_rmsd: bool = False,
         reference_coords: Optional[np.ndarray] = None,
         max_structures: Optional[int] = None
-    ) -> Optional[Any]:
+) -> Optional[Any]:
         """
         Create LogMD trajectory from list of predictions.
         
@@ -452,11 +452,11 @@
         return trajectory
 
 
-    # =============================================================================
-    # NOTEBOOK DISPLAY HELPERS
-    # =============================================================================
+# =============================================================================
+# NOTEBOOK DISPLAY HELPERS
+# =============================================================================
 
-    def display_trajectory_in_notebook(trajectory: Any) -> None:
+def display_trajectory_in_notebook(trajectory: Any) -> None:
         """
         Display LogMD trajectory in Jupyter notebook.
         
@@ -499,11 +499,11 @@
             print(f"View trajectory at: {trajectory.url}")
 
 
-    # =============================================================================
-    # MODULE INITIALIZATION
-    # =============================================================================
+# =============================================================================
+# MODULE INITIALIZATION
+# =============================================================================
 
-    if __name__ != "__main__":
+if __name__ != "__main__":
         print(f"LogMD Utils v{__version__} loaded")
         integration = LogMDIntegration()
         if integration.is_available():
