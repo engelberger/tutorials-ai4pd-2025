@@ -123,6 +123,9 @@ def create_pdb_string(
     """
     Generate PDB format string from atom positions.
     
+    Uses ColabDesign's protein.to_pdb for proper PDB generation with all atoms.
+    Falls back to simplified CA-only version if ColabDesign is not available.
+    
     Args:
         atom_positions: Atom coordinates (N, 37, 3)
         sequence: Amino acid sequence
@@ -132,37 +135,82 @@ def create_pdb_string(
     Returns:
         PDB format string
     """
-    # Amino acid 3-letter codes
-    aa_map = {
-        'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
-        'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
-        'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
-        'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
-    }
-    
-    # Atom names for standard amino acids (backbone atoms)
-    atom_names = ['N', 'CA', 'C', 'O', 'CB']
-    
-    lines = []
-    atom_serial = 1
-    
-    for res_idx, aa in enumerate(sequence):
-        resname = aa_map.get(aa, 'UNK')
-        res_num = res_idx + 1
-        b_factor = plddt[res_idx] if plddt is not None else 1.0
+    try:
+        # Try to use ColabDesign's proper PDB generation (with all atoms)
+        from colabdesign.af.alphafold.common import protein
         
-        # Add CA atom (most important for visualization)
-        ca_coord = atom_positions[res_idx, 1, :]
-        line = (
-            f"ATOM  {atom_serial:5d}  CA  {resname:3s} {chain_id}{res_num:4d}    "
-            f"{ca_coord[0]:8.3f}{ca_coord[1]:8.3f}{ca_coord[2]:8.3f}"
-            f"  1.00{b_factor:6.2f}           C  "
-        )
-        lines.append(line)
-        atom_serial += 1
-    
-    lines.append("END")
-    return "\n".join(lines)
+        # Convert sequence to aatype array
+        restype_order = {
+            'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4,
+            'G': 5, 'H': 6, 'I': 7, 'K': 8, 'L': 9,
+            'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14,
+            'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19
+        }
+        aatype = np.array([restype_order.get(aa, 0) for aa in sequence])
+        
+        # Create residue indices
+        residue_index = np.arange(len(sequence))
+        
+        # Create atom mask (assuming all atoms are present)
+        atom_mask = np.ones((len(sequence), 37))
+        
+        # Prepare protein dict
+        p = {
+            "aatype": aatype,
+            "residue_index": residue_index,
+            "atom_positions": atom_positions,
+            "atom_mask": atom_mask
+        }
+        
+        # Add B-factors if pLDDT is provided
+        if plddt is not None:
+            p["b_factors"] = 100 * atom_mask * plddt[..., None]
+        else:
+            p["b_factors"] = 100 * atom_mask
+        
+        # Convert to PDB string using ColabDesign's method
+        pdb_str = protein.to_pdb(protein.Protein(**p))
+        
+        # Filter to only keep ATOM and HETATM lines (remove MODEL/ENDMDL if present)
+        filtered_lines = []
+        for line in pdb_str.split('\n'):
+            if line.startswith(('ATOM', 'HETATM', 'TER', 'END')):
+                filtered_lines.append(line)
+        
+        return '\n'.join(filtered_lines)
+        
+    except ImportError:
+        # Fallback to simplified CA-only PDB if ColabDesign not available
+        logger.warning("ColabDesign not available, using simplified CA-only PDB format")
+        
+        # Amino acid 3-letter codes
+        aa_map = {
+            'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
+            'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
+            'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
+            'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
+        }
+        
+        lines = []
+        atom_serial = 1
+        
+        for res_idx, aa in enumerate(sequence):
+            resname = aa_map.get(aa, 'UNK')
+            res_num = res_idx + 1
+            b_factor = plddt[res_idx] if plddt is not None else 1.0
+            
+            # Add CA atom (most important for visualization)
+            ca_coord = atom_positions[res_idx, 1, :]
+            line = (
+                f"ATOM  {atom_serial:5d}  CA  {resname:3s} {chain_id}{res_num:4d}    "
+                f"{ca_coord[0]:8.3f}{ca_coord[1]:8.3f}{ca_coord[2]:8.3f}"
+                f"  1.00{b_factor:6.2f}           C  "
+            )
+            lines.append(line)
+            atom_serial += 1
+        
+        lines.append("END")
+        return "\n".join(lines)
 
 
 # =============================================================================
