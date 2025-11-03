@@ -1417,6 +1417,8 @@ class MSACoevolutionVisualizer:
         
         logger.debug(f"Computing coevolution for {msa.condition_name}")
         coev = get_coevolution(msa.array)
+        # Convert JAX array to numpy for caching and return
+        coev = np.array(coev)
         self._coev_cache[cache_key] = coev
         
         return coev
@@ -1713,7 +1715,7 @@ def get_coevolution(msa: np.ndarray) -> np.ndarray:
     ap = raw.sum(0, keepdims=True) * raw.sum(1, keepdims=True) / raw.sum()
     coev = (raw - ap).at[i, i].set(0)
     
-    return np.array(coev)
+    return coev  # Return JAX array directly, conversion happens outside JIT
 
 
 def calculate_rmsd(coords1: np.ndarray, 
