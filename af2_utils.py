@@ -2652,6 +2652,129 @@ def create_trajectory_from_ensemble(
         return None
 
 
+def create_recycle_trajectory(
+    job_folder: str,
+    sequence: str,
+    model_name: str = "model",
+    seed: int = 0,
+    align_to_first: bool = True,
+    project: str = "recycle_trajectory",
+    verbose: bool = True
+) -> Optional[Any]:
+    """
+    Load recycle PDB files and create LogMD trajectory.
+    
+    This function loads all PDB files from recycling iterations and creates
+    an interactive LogMD trajectory, with structures aligned to the first
+    recycle (following AlphaMask pattern).
+    
+    Args:
+        job_folder: Job folder containing pdb/recycles/ subdirectory
+        sequence: Amino acid sequence
+        model_name: Model name used in PDB filenames (default: "model")
+        seed: Random seed used during prediction (default: 0)
+        align_to_first: Align all structures to first recycle (default: True)
+        project: LogMD project name
+        verbose: Print progress information
+        
+    Returns:
+        LogMD trajectory instance or None if unavailable/failed
+        
+    Example:
+        >>> folder = create_job_folder("MKTAY...", "my_protein")
+        >>> result = predict_with_recycling(model, msa, save_pdbs=True, 
+        ...                                  job_folder=folder, sequence=seq)
+        >>> traj = create_recycle_trajectory(folder, seq)
+        >>> # View trajectory showing structure evolution through recycling
+    """
+    import glob
+    
+    if not check_logmd():
+        if verbose:
+            print("LogMD not available. Install with: pip install logmd")
+        return None
+    
+    # Find all recycle PDB files
+    recycle_dir = f"{job_folder}/pdb/recycles"
+    pattern = f"{recycle_dir}/{model_name}_r*_seed{seed}.pdb"
+    pdb_files = sorted(glob.glob(pattern))
+    
+    if not pdb_files:
+        if verbose:
+            print(f"No PDB files found matching pattern: {pattern}")
+        return None
+    
+    if verbose:
+        print(f"Found {len(pdb_files)} recycle PDB files")
+    
+    try:
+        import logmd_utils
+        
+        # Load structures and pLDDT values
+        structures = []
+        plddts = []
+        
+        for pdb_file in pdb_files:
+            # Load coordinates
+            coords = load_pdb_coords(pdb_file)
+            
+            # Convert CA coords to full atom_positions format (N, 37, 3)
+            # For now, we'll create a minimal representation with CA atoms
+            full_structure = np.zeros((len(coords), 37, 3))
+            full_structure[:, 1, :] = coords  # CA is index 1
+            structures.append(full_structure)
+            
+            # Try to extract pLDDT from B-factor if available
+            try:
+                from Bio import PDB
+                parser = PDB.PDBParser(QUIET=True)
+                structure = parser.get_structure("protein", pdb_file)
+                plddt_values = []
+                for model in structure:
+                    for chain in model:
+                        for residue in chain:
+                            if 'CA' in residue:
+                                plddt_values.append(residue['CA'].bfactor / 100.0)
+                plddts.append(np.array(plddt_values) if plddt_values else None)
+            except:
+                plddts.append(None)
+        
+        # Create predictions list for LogMD
+        predictions = []
+        for i, (struct, plddt) in enumerate(zip(structures, plddts)):
+            pred = {
+                'structure': struct,
+                'plddt': plddt if plddt is not None else np.ones(len(struct)) * 0.9,
+                'recycle': i,
+                'seed': seed
+            }
+            predictions.append(pred)
+        
+        # Create trajectory with alignment to first recycle
+        trajectory = logmd_utils.create_trajectory_from_predictions(
+            predictions=predictions,
+            sequence=sequence,
+            project=project,
+            align_structures=align_to_first,
+            sort_by_rmsd=False,  # Already in recycle order
+            reference_coords=None,
+            max_structures=None
+        )
+        
+        if verbose and trajectory:
+            print(f"\nRecycle trajectory created with {len(predictions)} frames")
+            print(f"View at: {trajectory.url}")
+            if align_to_first:
+                print("Structures aligned to first recycle (recycle 0)")
+        
+        return trajectory
+        
+    except Exception as e:
+        if verbose:
+            print(f"Failed to create recycle trajectory: {e}")
+        return None
+
+
 def predict_with_logmd(
     sequence: str,
     msa_mode: str = "mmseqs2",
