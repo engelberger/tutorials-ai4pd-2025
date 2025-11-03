@@ -1176,9 +1176,9 @@ def calculate_batch_rmsd_to_references(pred_coords_list: List[np.ndarray],
         >>> predictions = [pred1['structure'], pred2['structure'], ...]
         >>> rmsds = calculate_batch_rmsd_to_references(predictions)
     """
-    # Load reference structures CA coordinates
-    ref1_coords = load_pdb_coords(ref1_path)
-    ref2_coords = load_pdb_coords(ref2_path)
+    # Load reference structures CA coordinates for RMSD calculation
+    ref1_coords = load_ca_coords(ref1_path)
+    ref2_coords = load_ca_coords(ref2_path)
     
     # Extract CA coordinates from predictions
     pred_ca_list = [pred_coords[:, 1, :] for pred_coords in pred_coords_list]
@@ -2753,15 +2753,15 @@ def save_pdb_string(atom_positions: np.ndarray,
     return logmd_utils.create_pdb_string(atom_positions, sequence, plddt)
 
 
-def load_pdb_coords(pdb_path: str) -> np.ndarray:
+def load_ca_coords(pdb_path: str) -> np.ndarray:
     """
-    Load CA coordinates from PDB file.
+    Load CA (C-alpha) coordinates from PDB file for RMSD calculations.
     
     Args:
         pdb_path: Path to PDB file
         
     Returns:
-        CA coordinates array (N, 3)
+        CA coordinates array (N, 3) where N is number of residues
     """
     from Bio import PDB
     
@@ -2776,6 +2776,71 @@ def load_pdb_coords(pdb_path: str) -> np.ndarray:
                     coords.append(residue['CA'].coord)
     
     return np.array(coords)
+
+
+def load_pdb_coords(pdb_path: str) -> np.ndarray:
+    """
+    Load full atom coordinates from PDB file for visualization.
+    
+    NOTE: For RMSD calculations, use load_ca_coords() instead.
+    
+    Args:
+        pdb_path: Path to PDB file
+        
+    Returns:
+        Full atom coordinates array (N_residues, 37, 3)
+    """
+    # Use load_pdb to get full atom structure
+    atom_positions, _ = load_pdb(pdb_path)
+    return atom_positions
+
+
+def load_pdb(pdb_path: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Load full structure and pLDDT values from PDB file.
+    
+    Args:
+        pdb_path: Path to PDB file
+    
+    Returns:
+        Tuple of (atom_positions, plddt_values) where:
+        - atom_positions: Full atom coordinates (N_residues, 37, 3)
+        - plddt_values: Per-residue pLDDT scores (N_residues,) in 0-1 range
+    """
+    from colabdesign.af.alphafold.common import protein
+    
+    # Read PDB file
+    with open(pdb_path, 'r') as f:
+        pdb_string = f.read()
+    
+    # Parse using ColabDesign to get all atom positions
+    prot = protein.from_pdb_string(pdb_string)
+    atom_positions = prot.atom_positions.astype(np.float32)
+    
+    # Extract pLDDT from B-factors if available
+    plddt_values = np.ones(len(atom_positions)) * 0.5  # Default value
+    
+    if hasattr(prot, 'b_factors') and prot.b_factors is not None:
+        # B-factors are per atom, get CA B-factors (index 1)
+        plddt_values = prot.b_factors[:, 1] / 100.0  # Convert to 0-1 range
+    else:
+        # Try to extract pLDDT from B-factor using BioPython as fallback
+        try:
+            from Bio import PDB
+            parser = PDB.PDBParser(QUIET=True)
+            structure = parser.get_structure("protein", pdb_path)
+            plddt_list = []
+            for model in structure:
+                for chain in model:
+                    for residue in chain:
+                        if 'CA' in residue:
+                            plddt_list.append(residue['CA'].bfactor / 100.0)
+            if plddt_list:
+                plddt_values = np.array(plddt_list)
+        except:
+            pass  # Keep default values
+    
+    return atom_positions, plddt_values
 
 
 def create_trajectory_from_ensemble(
