@@ -2780,22 +2780,26 @@ def predict_with_logmd(
     msa_mode: str = "mmseqs2",
     num_recycles: int = 3,
     project: str = "AF2_Tutorial",
+    save_pdbs: bool = True,
+    jobname: str = "prediction",
     show_viewer: bool = True,
     verbose: bool = True
 ) -> Dict[str, Any]:
     """
-    Run prediction with real-time LogMD visualization.
+    Run prediction with real-time LogMD visualization and PDB saving.
     
     Args:
         sequence: Amino acid sequence
         msa_mode: MSA generation mode ("mmseqs2" or "single_sequence")
         num_recycles: Number of recycling iterations
         project: LogMD project name
+        save_pdbs: Save PDB files for each recycle (default: True)
+        jobname: Job name for folder creation (default: "prediction")
         show_viewer: Display LogMD viewer in notebook
         verbose: Print progress information
         
     Returns:
-        Dictionary with prediction results and trajectory
+        Dictionary with prediction results, trajectory, and job_folder
     """
     if not check_logmd():
         if verbose:
@@ -2804,6 +2808,13 @@ def predict_with_logmd(
     
     try:
         import logmd_utils
+        
+        # Create job folder if saving PDBs
+        job_folder = None
+        if save_pdbs:
+            job_folder = create_job_folder(sequence, jobname)
+            if verbose:
+                print(f"Created job folder: {job_folder}")
         
         # Create LogMD trajectory
         integration = logmd_utils.LogMDIntegration()
@@ -2827,6 +2838,10 @@ def predict_with_logmd(
         else:
             msa, deletion_matrix = create_single_sequence_msa(sequence)
         
+        # Set MSA
+        model.set_msa(msa, deletion_matrix)
+        model.set_seed(0)
+        
         # Get reference CA for alignment
         reference_ca = None
         all_structures = []
@@ -2841,7 +2856,17 @@ def predict_with_logmd(
             atom_positions = model.aux['atom_positions'].copy()
             plddt = model.aux['plddt'].copy()
             
-            # Align to first frame
+            # Save PDB if requested
+            if save_pdbs and job_folder:
+                pdb_path = f"{job_folder}/pdb/recycles/model_r{recycle}_seed0.pdb"
+                save_pdb(
+                    atom_positions=atom_positions,
+                    sequence=sequence,
+                    output_path=pdb_path,
+                    plddt=plddt
+                )
+            
+            # Align to first frame (AlphaMask style)
             if reference_ca is None:
                 reference_ca = logmd_utils.get_ca_positions(atom_positions)
                 aligned_positions = atom_positions
@@ -2867,7 +2892,8 @@ def predict_with_logmd(
             })
             
             if verbose:
-                print(f"  Recycle {recycle}: pLDDT={plddt.mean():.3f}")
+                pdb_status = " [PDB saved]" if save_pdbs else ""
+                print(f"  Recycle {recycle}: pLDDT={plddt.mean():.3f}{pdb_status}")
         
         # Get final result
         final_result = {
@@ -2882,6 +2908,9 @@ def predict_with_logmd(
             'trajectory': trajectory,
             'all_structures': all_structures
         }
+        
+        if save_pdbs:
+            final_result['job_folder'] = job_folder
         
         # Display in notebook if requested
         if show_viewer:
