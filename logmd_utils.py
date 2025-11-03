@@ -257,16 +257,34 @@ class LogMDIntegration:
             return False
         
         try:
+            import sys
+            import io
+            import time
+            
             # Generate PDB string
             pdb_string = create_pdb_string(atom_positions, sequence, plddt)
             
-            # Create frame info
-            frame_info = {"label": label}
+            # Create metadata dict for LogMD
+            data_dict = {"label": label}
             if metadata:
-                frame_info.update(metadata)
+                data_dict.update(metadata)
             
-            # Add to trajectory
-            trajectory.add_frame(pdb_string, **frame_info)
+            # Suppress LogMD's verbose output
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            try:
+                sys.stdout = io.StringIO()
+                sys.stderr = io.StringIO()
+                
+                # Call trajectory instance to add frame (LogMD API)
+                trajectory(pdb_string, data_dict=data_dict)
+            finally:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+            
+            # Add small delay to prevent server overload
+            time.sleep(0.5)
+            
             return True
         except Exception as e:
             logger.error(f"Failed to add structure to trajectory: {e}")
