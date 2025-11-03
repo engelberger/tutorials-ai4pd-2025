@@ -1989,7 +1989,7 @@ def plot_coevolution(msa: np.ndarray,
     Returns:
         Matplotlib figure
     """
-    coev = get_coevolution(msa)
+    coev = np.array(get_coevolution(msa))  # Convert JAX array to numpy
     
     fig, ax = plt.subplots(figsize=(8, 8))
     
@@ -2148,7 +2148,7 @@ def plot_coevolution_interactive(
             length=msa.shape[1],
             condition_name=condition_name or "MSA"
         )
-        coev = get_coevolution(msa)
+        coev = np.array(get_coevolution(msa))  # Convert JAX array to numpy
     
     # Create plot
     fig = vis.plot_heatmap(coev, title=title, msa_data=msa_data)
