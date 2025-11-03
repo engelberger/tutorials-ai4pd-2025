@@ -58,6 +58,7 @@ __all__ = [
     # Visualization functions
     'plot_3d_structure', 'plot_confidence', 'plot_msa', 'plot_coevolution', 'plot_ensemble_analysis',
     'plot_msa_interactive', 'plot_coevolution_interactive', 'compare_coevolution_conditions',
+    'create_interactive_conformational_landscape',
     # LogMD functions
     'check_logmd', 'create_trajectory_from_ensemble', 'create_recycle_trajectory', 'create_reference_overlay_trajectory', 'save_pdb_string',
 ]
@@ -3041,13 +3042,13 @@ def create_reference_overlay_trajectory(
         predictions = [
             {
                 'structure': atom_pos1,
-                'plddt': prot1.b_factors[:, 0] / 100.0 if hasattr(prot1, 'b_factors') else None,
+                'plddt': prot1.b_factors[:, 1] / 100.0 if hasattr(prot1, 'b_factors') else None,
                 'state': 'State 1',
                 'description': 'Reference conformation 1'
             },
             {
                 'structure': atom_pos2,
-                'plddt': prot2.b_factors[:, 0] / 100.0 if hasattr(prot2, 'b_factors') else None,
+                'plddt': prot2.b_factors[:, 1] / 100.0 if hasattr(prot2, 'b_factors') else None,
                 'state': 'State 2',
                 'description': 'Reference conformation 2'
             }
@@ -3234,6 +3235,208 @@ def predict_with_logmd(
             print(f"LogMD prediction failed: {e}")
             print("Falling back to standard prediction.")
         return quick_predict(sequence, msa_mode, num_recycles, verbose=verbose)
+
+
+def create_interactive_conformational_landscape(
+    predictions_with_msa: List[Dict],
+    predictions_no_msa: List[Dict], 
+    state1_coords: np.ndarray,
+    state2_coords: np.ndarray,
+    ref_rmsd: float,
+    max_rmsd: Optional[float] = None
+) -> Any:
+    """
+    Create interactive plotly conformational landscape showing all predictions including recycles.
+    
+    This function creates an interactive scatter plot showing all predictions from both
+    conditions (with MSA and without MSA) including all intermediate recycle steps.
+    
+    Args:
+        predictions_with_msa: List of prediction dictionaries with MSA (containing trajectory)
+        predictions_no_msa: List of prediction dictionaries without MSA (containing trajectory)
+        state1_coords: Reference coordinates for State 1 (CA atoms)
+        state2_coords: Reference coordinates for State 2 (CA atoms)
+        ref_rmsd: RMSD between State 1 and State 2
+        max_rmsd: Optional maximum RMSD for axis scaling
+        
+    Returns:
+        Plotly figure object with interactive scatter plot
+        
+    Example:
+        >>> fig = create_interactive_conformational_landscape(
+        ...     predictions_with_msa, predictions_no_msa,
+        ...     state1_coords, state2_coords, ref_rmsd=3.0
+        ... )
+        >>> fig.show()
+    """
+    try:
+        import plotly.graph_objects as go
+        import plotly.express as px
+        from plotly.subplots import make_subplots
+    except ImportError:
+        raise ImportError("Plotly is required. Install with: pip install plotly")
+    
+    # Extract all recycle data from both conditions
+    all_data = []
+    
+    # Process predictions with MSA
+    for pred in predictions_with_msa:
+        seed = pred['seed']
+        model_name = pred.get('model_name', 'model_1')
+        
+        # Extract data from all recycles in trajectory
+        for recycle_step in pred['trajectory']:
+            ca_coords = recycle_step['structure'][:, 1, :]  # Extract CA atoms
+            rmsd1 = calculate_rmsd(ca_coords, state1_coords)
+            rmsd2 = calculate_rmsd(ca_coords, state2_coords)
+            plddt = recycle_step['metrics']['plddt'] * 100
+            
+            all_data.append({
+                'condition': 'With MSA',
+                'model': model_name,
+                'seed': seed,
+                'recycle': recycle_step['recycle'],
+                'rmsd_state1': rmsd1,
+                'rmsd_state2': rmsd2,
+                'plddt': plddt,
+                'closer_to': 'State 1' if rmsd1 < rmsd2 else 'State 2'
+            })
+    
+    # Process predictions without MSA
+    for pred in predictions_no_msa:
+        seed = pred['seed']
+        model_name = pred.get('model_name', 'model_1')
+        
+        # Extract data from all recycles in trajectory
+        for recycle_step in pred['trajectory']:
+            ca_coords = recycle_step['structure'][:, 1, :]  # Extract CA atoms
+            rmsd1 = calculate_rmsd(ca_coords, state1_coords)
+            rmsd2 = calculate_rmsd(ca_coords, state2_coords)
+            plddt = recycle_step['metrics']['plddt'] * 100
+            
+            all_data.append({
+                'condition': 'Without MSA',
+                'model': model_name,
+                'seed': seed,
+                'recycle': recycle_step['recycle'],
+                'rmsd_state1': rmsd1,
+                'rmsd_state2': rmsd2,
+                'plddt': plddt,
+                'closer_to': 'State 1' if rmsd1 < rmsd2 else 'State 2'
+            })
+    
+    # Convert to DataFrame for easier plotting
+    import pandas as pd
+    df = pd.DataFrame(all_data)
+    
+    # Calculate max RMSD if not provided
+    if max_rmsd is None:
+        max_rmsd = max(df['rmsd_state1'].max(), df['rmsd_state2'].max()) * 1.1
+    
+    # Create scatter plot with marginal histograms
+    fig = px.scatter(
+        df,
+        x='rmsd_state1',
+        y='rmsd_state2',
+        color='condition',
+        symbol='condition',
+        marginal_x='histogram',
+        marginal_y='histogram',
+        hover_data={
+            'condition': True,
+            'model': True,
+            'seed': True,
+            'recycle': True,
+            'rmsd_state1': ':.2f',
+            'rmsd_state2': ':.2f',
+            'plddt': ':.1f',
+            'closer_to': True
+        },
+        labels={
+            'rmsd_state1': 'RMSD to State 1 (Å)',
+            'rmsd_state2': 'RMSD to State 2 (Å)',
+            'condition': 'Condition'
+        },
+        title='Interactive Conformational Landscape',
+        color_discrete_map={
+            'With MSA': 'steelblue',
+            'Without MSA': 'coral'
+        }
+    )
+    
+    # Add diagonal line
+    fig.add_trace(
+        go.Scatter(
+            x=[0, max_rmsd],
+            y=[0, max_rmsd],
+            mode='lines',
+            line=dict(color='gray', dash='dash'),
+            showlegend=False,
+            hoverinfo='skip'
+        )
+    )
+    
+    # Add reference point (State1 vs State2)
+    fig.add_trace(
+        go.Scatter(
+            x=[0],
+            y=[ref_rmsd],
+            mode='markers',
+            marker=dict(
+                color='red',
+                size=15,
+                symbol='star'
+            ),
+            name=f'State1 vs State2 ({ref_rmsd:.1f}Å)',
+            hovertemplate='State1 vs State2<br>RMSD: %{y:.1f} Å<extra></extra>'
+        )
+    )
+    
+    # Update layout
+    fig.update_layout(
+        width=900,
+        height=800,
+        template='plotly_white',
+        xaxis=dict(range=[0, max_rmsd]),
+        yaxis=dict(range=[0, max_rmsd]),
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
+    )
+    
+    # Update hover template for main scatter points
+    fig.update_traces(
+        hovertemplate='<b>%{customdata[0]}</b><br>' +
+                      'Model: %{customdata[1]}<br>' +
+                      'Seed: %{customdata[2]}<br>' +
+                      'Recycle: %{customdata[3]}<br>' +
+                      'RMSD to State 1: %{customdata[4]} Å<br>' +
+                      'RMSD to State 2: %{customdata[5]} Å<br>' +
+                      'pLDDT: %{customdata[6]}%<br>' +
+                      'Closer to: %{customdata[7]}<extra></extra>',
+        selector=dict(type='scatter', mode='markers')
+    )
+    
+    # Add text annotations for summary
+    with_msa_count = len(df[df['condition'] == 'With MSA'])
+    no_msa_count = len(df[df['condition'] == 'Without MSA'])
+    
+    fig.add_annotation(
+        text=f"Total predictions shown: {len(df)}<br>" +
+             f"With MSA: {with_msa_count} points<br>" +
+             f"Without MSA: {no_msa_count} points",
+        xref="paper", yref="paper",
+        x=0.02, y=0.98,
+        showarrow=False,
+        bgcolor="white",
+        bordercolor="gray",
+        borderwidth=1
+    )
+    
+    return fig
 
 
 # =============================================================================
