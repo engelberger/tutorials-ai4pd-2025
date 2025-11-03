@@ -2576,11 +2576,20 @@ def save_pdb(atom_positions: np.ndarray,
         }
         aatype = np.array([restype_order.get(aa, 0) for aa in sequence])
         
-        # Create residue indices
-        residue_index = np.arange(len(sequence))
+        # Create residue indices starting at 1 (required for proper PDB format)
+        residue_index = np.arange(1, len(sequence) + 1)
         
-        # Create atom mask (assuming all atoms are present)
+        # Derive atom_mask from atom_positions
+        # An atom is present if its coordinates are not all zeros OR if it's a backbone atom
         atom_mask = np.ones((len(sequence), 37))
+        for i in range(len(sequence)):
+            for j in range(37):
+                coords = atom_positions[i, j, :]
+                # Keep backbone atoms (N, CA, C, O) even if zero
+                # For others, mask out if at origin
+                if j >= 4:  # Sidechain atoms (indices 4+)
+                    if np.allclose(coords, [0, 0, 0]):
+                        atom_mask[i, j] = 0.0
         
         # Prepare protein dict
         p = {
