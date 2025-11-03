@@ -2618,43 +2618,43 @@ def save_pdb(atom_positions: np.ndarray,
     except ImportError:
         # Fallback to BioPython if ColabDesign not available
         warnings.warn("ColabDesign not available, saving CA-only PDB")
-    from Bio.PDB import PDBIO, Structure, Model, Chain, Residue, Atom
-    
-    # Create structure
-    structure = Structure.Structure("prediction")
-    model = Model.Model(0)
-    chain = Chain.Chain("A")
-    
-    # Amino acid mapping
-    aa_map = {
-        'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
-        'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
-        'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
-        'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
-    }
-    
-    for res_idx, aa in enumerate(sequence):
-        resname = aa_map.get(aa, 'UNK')
-        residue = Residue.Residue((' ', res_idx + 1, ' '), resname, '')
+        from Bio.PDB import PDBIO, Structure, Model, Chain, Residue, Atom
         
-        # Add CA atom (index 1 in atom_positions)
-        ca_coord = atom_positions[res_idx, 1, :]
+        # Create structure
+        structure = Structure.Structure("prediction")
+        model = Model.Model(0)
+        chain = Chain.Chain("A")
+        
+        # Amino acid mapping
+        aa_map = {
+            'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
+            'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
+            'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
+            'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
+        }
+        
+        for res_idx, aa in enumerate(sequence):
+            resname = aa_map.get(aa, 'UNK')
+            residue = Residue.Residue((' ', res_idx + 1, ' '), resname, '')
+            
+            # Add CA atom (index 1 in atom_positions)
+            ca_coord = atom_positions[res_idx, 1, :]
             b_factor = plddt[res_idx] * 100 if plddt is not None else 50.0
             if plddt is not None and plddt.max() <= 1.0:
                 b_factor = plddt[res_idx] * 100
             ca_atom = Atom.Atom('CA', ca_coord, 1.0, b_factor, 
-                           ' ', 'CA', 0, 'C')
-        residue.add(ca_atom)
+                               ' ', 'CA', 0, 'C')
+            residue.add(ca_atom)
+            
+            chain.add(residue)
         
-        chain.add(residue)
-    
-    model.add(chain)
-    structure.add(model)
-    
-    # Save
-    io = PDBIO()
-    io.set_structure(structure)
-    io.save(output_path)
+        model.add(chain)
+        structure.add(model)
+        
+        # Save
+        io = PDBIO()
+        io.set_structure(structure)
+        io.save(output_path)
 
 
 def save_pdb_string(atom_positions: np.ndarray,
