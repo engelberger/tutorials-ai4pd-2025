@@ -1748,8 +1748,8 @@ def calculate_rmsd(coords1: np.ndarray,
         RMSD value in Angstroms
     """
     try:
-        from colabdesign.shared.protein import _np_rmsd
-        return _np_rmsd(coords1, coords2, use_jax=False)
+    from colabdesign.shared.protein import _np_rmsd
+    return _np_rmsd(coords1, coords2, use_jax=False)
     except ImportError:
         # Standalone CPU implementation when ColabDesign is not available
         coords1 = np.array(coords1)
@@ -2609,43 +2609,43 @@ def save_pdb(atom_positions: np.ndarray,
     except ImportError:
         # Fallback to BioPython if ColabDesign not available
         warnings.warn("ColabDesign not available, saving CA-only PDB")
-        from Bio.PDB import PDBIO, Structure, Model, Chain, Residue, Atom
+    from Bio.PDB import PDBIO, Structure, Model, Chain, Residue, Atom
+    
+    # Create structure
+    structure = Structure.Structure("prediction")
+    model = Model.Model(0)
+    chain = Chain.Chain("A")
+    
+    # Amino acid mapping
+    aa_map = {
+        'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
+        'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
+        'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
+        'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
+    }
+    
+    for res_idx, aa in enumerate(sequence):
+        resname = aa_map.get(aa, 'UNK')
+        residue = Residue.Residue((' ', res_idx + 1, ' '), resname, '')
         
-        # Create structure
-        structure = Structure.Structure("prediction")
-        model = Model.Model(0)
-        chain = Chain.Chain("A")
-        
-        # Amino acid mapping
-        aa_map = {
-            'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
-            'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
-            'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
-            'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
-        }
-        
-        for res_idx, aa in enumerate(sequence):
-            resname = aa_map.get(aa, 'UNK')
-            residue = Residue.Residue((' ', res_idx + 1, ' '), resname, '')
-            
-            # Add CA atom (index 1 in atom_positions)
-            ca_coord = atom_positions[res_idx, 1, :]
+        # Add CA atom (index 1 in atom_positions)
+        ca_coord = atom_positions[res_idx, 1, :]
             b_factor = plddt[res_idx] * 100 if plddt is not None else 50.0
             if plddt is not None and plddt.max() <= 1.0:
                 b_factor = plddt[res_idx] * 100
             ca_atom = Atom.Atom('CA', ca_coord, 1.0, b_factor, 
-                               ' ', 'CA', 0, 'C')
-            residue.add(ca_atom)
-            
-            chain.add(residue)
+                           ' ', 'CA', 0, 'C')
+        residue.add(ca_atom)
         
-        model.add(chain)
-        structure.add(model)
-        
-        # Save
-        io = PDBIO()
-        io.set_structure(structure)
-        io.save(output_path)
+        chain.add(residue)
+    
+    model.add(chain)
+    structure.add(model)
+    
+    # Save
+    io = PDBIO()
+    io.set_structure(structure)
+    io.save(output_path)
 
 
 def save_pdb_string(atom_positions: np.ndarray,

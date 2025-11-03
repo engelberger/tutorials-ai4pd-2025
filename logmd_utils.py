@@ -183,34 +183,34 @@ def create_pdb_string(
         # Fallback to simplified CA-only PDB if ColabDesign not available
         logger.warning("ColabDesign not available, using simplified CA-only PDB format")
         
-        # Amino acid 3-letter codes
-        aa_map = {
-            'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
-            'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
-            'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
-            'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
-        }
+    # Amino acid 3-letter codes
+    aa_map = {
+        'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
+        'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
+        'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
+        'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR'
+    }
+    
+    lines = []
+    atom_serial = 1
+    
+    for res_idx, aa in enumerate(sequence):
+        resname = aa_map.get(aa, 'UNK')
+        res_num = res_idx + 1
+        b_factor = plddt[res_idx] if plddt is not None else 1.0
         
-        lines = []
-        atom_serial = 1
-        
-        for res_idx, aa in enumerate(sequence):
-            resname = aa_map.get(aa, 'UNK')
-            res_num = res_idx + 1
-            b_factor = plddt[res_idx] if plddt is not None else 1.0
-            
-            # Add CA atom (most important for visualization)
-            ca_coord = atom_positions[res_idx, 1, :]
-            line = (
-                f"ATOM  {atom_serial:5d}  CA  {resname:3s} {chain_id}{res_num:4d}    "
-                f"{ca_coord[0]:8.3f}{ca_coord[1]:8.3f}{ca_coord[2]:8.3f}"
-                f"  1.00{b_factor:6.2f}           C  "
-            )
-            lines.append(line)
-            atom_serial += 1
-        
-        lines.append("END")
-        return "\n".join(lines)
+        # Add CA atom (most important for visualization)
+        ca_coord = atom_positions[res_idx, 1, :]
+        line = (
+            f"ATOM  {atom_serial:5d}  CA  {resname:3s} {chain_id}{res_num:4d}    "
+            f"{ca_coord[0]:8.3f}{ca_coord[1]:8.3f}{ca_coord[2]:8.3f}"
+            f"  1.00{b_factor:6.2f}           C  "
+        )
+        lines.append(line)
+        atom_serial += 1
+    
+    lines.append("END")
+    return "\n".join(lines)
 
 
 # =============================================================================
