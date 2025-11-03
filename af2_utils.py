@@ -1677,7 +1677,6 @@ class MSACoevolutionVisualizer:
         return template
 
 
-@jax.jit
 def get_coevolution(msa: np.ndarray) -> np.ndarray:
     """
     Compute coevolution matrix from MSA using direct coupling analysis.
@@ -1688,6 +1687,22 @@ def get_coevolution(msa: np.ndarray) -> np.ndarray:
     Returns:
         Coevolution matrix with shape (L, L)
     """
+    # Check for insufficient sequences - return zeros as coevolution needs multiple sequences
+    # Need at least 2 sequences for meaningful covariance
+    if msa.shape[0] < 2:
+        logger.debug(f"MSA has only {msa.shape[0]} sequence(s), returning zero coevolution matrix")
+        return np.zeros((msa.shape[1], msa.shape[1]))
+    
+    # For very small MSAs, the coevolution might not be reliable but we'll compute it anyway
+    if msa.shape[0] < 10:
+        logger.warning(f"MSA has only {msa.shape[0]} sequences, coevolution may not be reliable")
+    
+    # Use the JIT-compiled version for multiple sequences
+    return _get_coevolution_jit(msa)
+
+@jax.jit
+def _get_coevolution_jit(msa: np.ndarray):
+    """JIT-compiled coevolution calculation for multiple sequences."""
     # Convert to one-hot encoding
     Y = jax.nn.one_hot(msa, 22)
     N, L, A = Y.shape
